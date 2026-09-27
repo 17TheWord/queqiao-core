@@ -7,10 +7,25 @@ import io.github.theword.queqiao.core.protocol.AbstractProtocolHandler;
 import io.github.theword.queqiao.core.response.PrivateMessageResponse;
 import org.slf4j.Logger;
 
+/**
+ * 私聊处理器（迁移期遗留）
+ *
+ * <p><b>已不再被 {@code ProtocolRouter} 注册</b>：{@code send_private_msg} 已迁移到
+ * {@link io.github.theword.queqiao.core.api.standard.PrivateMessageApi}，
+ * 由平台按自身能力决定是否注册（未注册时返回 404）。
+ *
+ * <p>保留本类是为了保留迁移痕迹、避免把"兼容性清理"和"API SPI 实验"绑在一起；
+ * 它依赖的 {@link HandleApiService#handleSendPrivateMessage} 也已标记为
+ * {@code @Deprecated}。
+ *
+ * @deprecated 使用 {@code PrivateMessageApi} +
+ *         {@code PlayerProvider} / {@code PlayerMessageSender} 代替。
+ */
+@Deprecated
 public class SendPrivateMessageHandler extends AbstractProtocolHandler<PrivateMessagePayload, PrivateMessageResponse> {
 
-    public SendPrivateMessageHandler(Logger logger, HandleApiService handleApiService) {
-        super(logger, handleApiService, PrivateMessagePayload.class);
+    public SendPrivateMessageHandler(String apiName, Logger logger, HandleApiService handleApiService) {
+        super(apiName, logger, handleApiService, PrivateMessagePayload.class);
     }
 
     /**

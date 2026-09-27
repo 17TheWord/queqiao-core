@@ -1,5 +1,6 @@
 package io.github.theword.queqiao.core.protocol;
 
+import io.github.theword.queqiao.core.api.Api;
 import io.github.theword.queqiao.core.constant.ProtocolConstants;
 import io.github.theword.queqiao.core.exception.protocol.ProtocolException;
 import io.github.theword.queqiao.core.handle.HandleApiService;
@@ -13,6 +14,10 @@ import java.util.Objects;
 
 /**
  * 协议处理器抽象基类
+ *
+ * <p><b>它是 {@link Api} 的一种可选实现方式</b>：负责"把 {@code JsonElement}
+ * 解析成强类型 Payload 再交给子类"。{@code Api} 本身是接口，不强制继承本类——
+ * 新的 API 可以像 {@code PrivateMessageApi} 那样直接 {@code implements Api}。
  *
  * <p><b>线程安全约束（重要）</b>：处理器实例由 {@link ProtocolRouter} 在构造阶段创建一次，
  * 随后在多个连接、多个线程之间共享。因此实现<b>必须无状态</b>——
@@ -29,7 +34,7 @@ import java.util.Objects;
  * @param <R> 返回类型
  * @since 0.6.11
  */
-public abstract class AbstractProtocolHandler<P, R> {
+public abstract class AbstractProtocolHandler<P, R> implements Api {
 
     /**
      * 日志实现，由 ProtocolRouter 注入
@@ -46,12 +51,30 @@ public abstract class AbstractProtocolHandler<P, R> {
 
     private final Class<P> payloadType;
 
-    protected AbstractProtocolHandler(Logger logger, HandleApiService handleApiService, Class<P> payloadType) {
+    /**
+     * 协议 API 名称
+     *
+     * <p>由子类通过构造器传入，而不是硬编码在基类里——因为同一个处理器类
+     * 可能被注册到多个名称下（例如 {@code broadcast} 与 {@code send_msg}）。
+     */
+    private final String apiName;
+
+    protected AbstractProtocolHandler(String apiName, Logger logger, HandleApiService handleApiService, Class<P> payloadType) {
+        this.apiName = Objects.requireNonNull(apiName, "apiName");
         this.logger = Objects.requireNonNull(logger, "logger");
         this.handleApiService = handleApiService;
         this.payloadType = Objects.requireNonNull(payloadType, "payloadType");
     }
 
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public String getName() {
+        return apiName;
+    }
+
+    @Override
     public final R handle(JsonElement data) throws ProtocolException {
         if (payloadType == EmptyPayload.class) {
             // 协议决策：对"无负载"的 api（如 get_status），data 字段被忽略、不做校验。

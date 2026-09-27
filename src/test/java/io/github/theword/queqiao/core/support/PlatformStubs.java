@@ -1,8 +1,12 @@
 package io.github.theword.queqiao.core.support;
 
+import io.github.theword.queqiao.core.api.ApiRegistry;
+import io.github.theword.queqiao.core.api.platform.BroadcastService;
+import io.github.theword.queqiao.core.api.standard.BroadcastApi;
 import io.github.theword.queqiao.core.config.Config;
 import io.github.theword.queqiao.core.config.ConfigKeys;
 import io.github.theword.queqiao.core.config.schema.ConfigRegistry;
+import io.github.theword.queqiao.core.constant.ProtocolConstants;
 import io.github.theword.queqiao.core.exception.rcon.RconException;
 import io.github.theword.queqiao.core.handle.HandleApiService;
 import io.github.theword.queqiao.core.handle.HandleProtocolMessage;
@@ -99,11 +103,52 @@ public final class PlatformStubs {
     }
 
     /**
+     * 构造一个已注册 {@code broadcast} / {@code send_msg} 的注册中心
+     *
+     * <p>Core 默认<b>不再</b>注册广播类 API（由平台按自身能力决定），
+     * 因此以广播当载体验证"传输 / 分发链路"的用例需要自己注册。
+     * 两个名称指向<b>同一个</b> {@link BroadcastService} 实例。
+     *
+     * @param service 平台广播能力
+     * @return 已注册两个广播名称的注册中心
+     */
+    public static ApiRegistry registryWithBroadcast(BroadcastService service) {
+        ApiRegistry registry = new ApiRegistry();
+        registry.register(new BroadcastApi(ProtocolConstants.Api.BROADCAST, service));
+        registry.register(new BroadcastApi(ProtocolConstants.Api.SEND_MSG, service));
+        return registry;
+    }
+
+    /**
+     * 记录被广播出去的消息的 {@link BroadcastService}
+     */
+    public static final class RecordingBroadcastService implements BroadcastService {
+
+        private final List<String> broadcasts = Collections.synchronizedList(new ArrayList<>());
+
+        @Override
+        public void broadcast(JsonElement message) {
+            broadcasts.add(String.valueOf(message));
+        }
+
+        public int getCount() {
+            synchronized (broadcasts) {
+                return broadcasts.size();
+            }
+        }
+
+        public List<String> getBroadcasts() {
+            synchronized (broadcasts) {
+                return new ArrayList<>(broadcasts);
+            }
+        }
+    }
+
+    /**
      * 构造协议分发入口（使用空平台实现与空 RCON 执行器）
      */
     public static HandleProtocolMessage newDispatcher(Logger logger, Gson gson) {
-        return new HandleProtocolMessage(
-                logger, gson, noopApiService(), rconExecutorReturning(""), newRuntimeUtils(logger), newStatusCollector(logger));
+        return newDispatcher(logger, gson, noopApiService(), rconExecutorReturning(""));
     }
 
     /**
@@ -111,8 +156,25 @@ public final class PlatformStubs {
      */
     public static HandleProtocolMessage newDispatcher(
             Logger logger, Gson gson, HandleApiService apiService, RconCommandExecutor rconCommandExecutor) {
+        return newDispatcher(logger, gson, apiService, rconCommandExecutor, new ApiRegistry());
+    }
+
+    /**
+     * 构造协议分发入口（使用调用方提供的 ApiRegistry）
+     *
+     * <p>协议层会把 Core 默认 API 注册进传入的注册中心。需要额外注册自定义 API
+     * （例如 {@code PrivateMessageApi} 或测试用的 EchoApi）的用例，
+     * 先用本重载拿到同一个注册中心引用，再继续注册即可。
+     */
+    public static HandleProtocolMessage newDispatcher(
+            Logger logger,
+            Gson gson,
+            HandleApiService apiService,
+            RconCommandExecutor rconCommandExecutor,
+            ApiRegistry apiRegistry) {
         return new HandleProtocolMessage(
-                logger, gson, apiService, rconCommandExecutor, newRuntimeUtils(logger), newStatusCollector(logger));
+                logger, gson, apiService, rconCommandExecutor, newRuntimeUtils(logger),
+                newStatusCollector(logger), apiRegistry);
     }
 
     /**

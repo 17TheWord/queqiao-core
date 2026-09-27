@@ -4,6 +4,7 @@ import io.github.theword.queqiao.core.config.io.ConfigFileReader;
 import io.github.theword.queqiao.core.config.io.ConfigFileState;
 import io.github.theword.queqiao.core.config.ConfigKeys;
 import io.github.theword.queqiao.core.config.schema.ConfigRegistry;
+import io.github.theword.queqiao.core.api.ApiRegistry;
 import io.github.theword.queqiao.core.config.Config;
 import io.github.theword.queqiao.core.config.ConfigSnapshot;
 import io.github.theword.queqiao.core.config.io.ConfigDocument;
@@ -105,6 +106,18 @@ public final class QueQiaoRuntime {
      */
     private final ServerStatusCollector serverStatusCollector;
 
+    /**
+     * API 注册中心
+     *
+     * <p>决定"这个 Runtime 对外开放哪些 API"。平台 / Addon 在 {@link #create} 之后、
+     * {@link #start()} 之前通过 {@link #getApiRegistry()} 注册；
+     * {@link #start()} 会调用 {@link ApiRegistry#freeze()}，此后不再允许注册。
+     *
+     * <p>平台若没有某项能力，可以选择<b>根本不注册</b>对应 API——客户端会得到 404，
+     * 而不是运行时返回"不支持"。
+     */
+    private final ApiRegistry apiRegistry;
+
     // ------------------------------------------------------------------
     // 会随 start / reload / shutdown 变化的字段
     //
@@ -177,11 +190,14 @@ public final class QueQiaoRuntime {
         this.utils = new RuntimeUtils(this.config, this.logger);
         // 状态采集器为实例级：先于协议层创建，再注入给协议分发链
         this.serverStatusCollector = new ServerStatusCollector(serverType, serverVersion, logger);
+        // API 注册中心同样先于协议层创建：ProtocolRouter 会把 Core 默认 API 注册进去，
+        // 平台 / Addon 随后在 start() 之前继续注册自己的 API
+        this.apiRegistry = new ApiRegistry();
         // 平台 API 实现与 RCON 执行器由协议层注入，协议层因此不再依赖静态全局状态。
         // 这里传入 this::sendRconCommand 是安全的：该 lambda 只在收到请求时才会被调用，
         // 此时对象早已构造完成（构造期间不会被发布）。
         this.handleProtocolMessage = new HandleProtocolMessage(
-                logger, this.gson, handleApiService, this::sendRconCommand, this.utils, this.serverStatusCollector);
+                logger, this.gson, handleApiService, this::sendRconCommand, this.utils, this.serverStatusCollector, this.apiRegistry);
     }
 
     public static QueQiaoRuntime create(boolean modServer, String serverVersion, String serverType, HandleApiService handleApiService, HandleCommandReturnMessageService handleCommandReturnMessageService) {
@@ -349,6 +365,8 @@ public final class QueQiaoRuntime {
 
         // 核心与 Addon 在启动期完成注册；加载配置前冻结 Schema。
         configRegistry.freeze();
+        // API 注册阶段到此结束：之后运行期不允许动态增删 API
+        apiRegistry.freeze();
 
         // §6 固定顺序：先把配置加载并提交，再启动任何依赖配置的服务。
         // 配置非法时这里会抛异常，从而不会出现"半套配置 + 服务已启动"的状态（§12/§38）。
@@ -646,6 +664,22 @@ public final class QueQiaoRuntime {
      */
     public ServerStatusCollector getServerStatusCollector() {
         return serverStatusCollector;
+    }
+
+    /**
+     * 获取 API 注册中心
+     *
+     * <p>平台 / Addon 在 {@link #create} 之后、{@link #start()} 之前用它注册 API：
+     * <pre>
+     * QueQiaoRuntime runtime = QueQiaoRuntime.create(...);
+     * runtime.getApiRegistry().register(new MyApi());
+     * runtime.start();   // 内部会 freeze，之后不能再注册
+     * </pre>
+     *
+     * @return 本 Runtime 独占的 API 注册中心
+     */
+    public ApiRegistry getApiRegistry() {
+        return apiRegistry;
     }
 
     public HandleApiService getHandleApiService() {

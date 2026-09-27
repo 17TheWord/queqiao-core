@@ -6,8 +6,8 @@ import io.github.theword.queqiao.core.protocol.AbstractProtocolHandler;
 import org.slf4j.Logger;
 
 public class SendActionBarHandler extends AbstractProtocolHandler<MessagePayload, Void> {
-    public SendActionBarHandler(Logger logger, HandleApiService handleApiService) {
-        super(logger, handleApiService, MessagePayload.class);
+    public SendActionBarHandler(String apiName, Logger logger, HandleApiService handleApiService) {
+        super(apiName, logger, handleApiService, MessagePayload.class);
     }
 
     @Override

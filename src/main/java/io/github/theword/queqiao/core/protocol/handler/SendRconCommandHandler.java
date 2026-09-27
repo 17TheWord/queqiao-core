@@ -21,8 +21,8 @@ public class SendRconCommandHandler extends AbstractProtocolHandler<CommandPaylo
      */
     private final RconCommandExecutor rconCommandExecutor;
 
-    public SendRconCommandHandler(Logger logger, HandleApiService handleApiService, RconCommandExecutor rconCommandExecutor) {
-        super(logger, handleApiService, CommandPayload.class);
+    public SendRconCommandHandler(String apiName, Logger logger, HandleApiService handleApiService, RconCommandExecutor rconCommandExecutor) {
+        super(apiName, logger, handleApiService, CommandPayload.class);
         this.rconCommandExecutor = Objects.requireNonNull(rconCommandExecutor, "rconCommandExecutor");
     }
 

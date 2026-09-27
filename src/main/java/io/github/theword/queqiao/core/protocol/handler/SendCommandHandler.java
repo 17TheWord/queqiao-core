@@ -9,8 +9,8 @@ import org.slf4j.Logger;
 
 public class SendCommandHandler extends AbstractProtocolHandler<EmptyPayload, Void> {
 
-    public SendCommandHandler(Logger logger, HandleApiService handleApiService) {
-        super(logger, handleApiService, EmptyPayload.class);
+    public SendCommandHandler(String apiName, Logger logger, HandleApiService handleApiService) {
+        super(apiName, logger, handleApiService, EmptyPayload.class);
     }
 
     @Override

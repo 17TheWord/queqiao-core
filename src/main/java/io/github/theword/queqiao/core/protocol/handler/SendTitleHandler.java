@@ -17,8 +17,8 @@ public class SendTitleHandler extends AbstractProtocolHandler<TitlePayload, Void
      */
     private static final int MAX_TITLE_DURATION_TICKS = 20 * 60 * 60;
 
-    public SendTitleHandler(Logger logger, HandleApiService handleApiService) {
-        super(logger, handleApiService, TitlePayload.class);
+    public SendTitleHandler(String apiName, Logger logger, HandleApiService handleApiService) {
+        super(apiName, logger, handleApiService, TitlePayload.class);
     }
 
     @Override

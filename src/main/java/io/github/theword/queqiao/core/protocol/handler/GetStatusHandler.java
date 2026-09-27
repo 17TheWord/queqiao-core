@@ -16,8 +16,8 @@ public class GetStatusHandler extends AbstractProtocolHandler<EmptyPayload, Map<
      */
     private final ServerStatusCollector serverStatusCollector;
 
-    public GetStatusHandler(Logger logger, HandleApiService handleApiService, ServerStatusCollector serverStatusCollector) {
-        super(logger, handleApiService, EmptyPayload.class);
+    public GetStatusHandler(String apiName, Logger logger, HandleApiService handleApiService, ServerStatusCollector serverStatusCollector) {
+        super(apiName, logger, handleApiService, EmptyPayload.class);
         this.serverStatusCollector = Objects.requireNonNull(serverStatusCollector, "serverStatusCollector");
     }
 

@@ -42,7 +42,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  *     <li>未注册的 api → 处理器表未命中 → 404</li>
  *     <li>{@code send_command} → 处理器必然抛 {@code ProtocolException} → 500</li>
  *     <li>{@code send_title} → 空 title/subtitle → 400</li>
- *     <li>{@code send_private_msg} → 空 nickname/uuid → 400</li>
+ *     <li>{@code send_private_msg} → 未注册（是否开放由平台注册决定）→ 404</li>
  * </ul>
  *
  * <p>注："未知 api → 404" 这一分支在 WS-B4 之前<b>无法测试</b>——
@@ -79,7 +79,8 @@ class HandleProtocolMessageConcurrencyTest {
             new ApiCase("__unknown_api__", ProtocolConstants.Status.NOT_FOUND),
             new ApiCase("send_command", ProtocolConstants.Status.INTERNAL_ERROR),
             new ApiCase("send_title", ProtocolConstants.Status.BAD_REQUEST),
-            new ApiCase("send_private_msg", ProtocolConstants.Status.BAD_REQUEST),
+            // send_private_msg 已迁到新的 API SPI，Core 默认不再注册它 → 走 404 分支
+            new ApiCase("send_private_msg", ProtocolConstants.Status.NOT_FOUND),
     };
 
     @Test

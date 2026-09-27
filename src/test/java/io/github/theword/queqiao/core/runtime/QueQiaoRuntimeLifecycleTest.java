@@ -1,8 +1,11 @@
 package io.github.theword.queqiao.core.runtime;
 
+import io.github.theword.queqiao.core.api.Api;
+import io.github.theword.queqiao.core.api.ApiRegistry;
 import io.github.theword.queqiao.core.config.io.ConfigStore;
 import io.github.theword.queqiao.core.config.schema.ConfigKey;
 import io.github.theword.queqiao.core.config.codec.StringCodec;
+import io.github.theword.queqiao.core.constant.ProtocolConstants;
 import io.github.theword.queqiao.core.event.PlayerChatEvent;
 import io.github.theword.queqiao.core.handle.HandleApiService;
 import io.github.theword.queqiao.core.handle.HandleCommandReturnMessageService;
@@ -304,6 +307,65 @@ class QueQiaoRuntimeLifecycleTest {
             created.shutdown();
             assertThrows(IllegalStateException.class, () -> created.reload(null));
             assertEquals(RuntimeState.STOPPED, created.getState(), "被拒的 reload 不应改变状态");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // API 注册中心接线
+    // ------------------------------------------------------------------
+
+    /**
+     * 平台 / Addon 自定义 API 的最小实现（Core 完全不需要知道它）
+     */
+    private static final class EchoApi implements Api {
+
+        private final String name;
+
+        private EchoApi(String name) {
+            this.name = name;
+        }
+
+        @Override
+        public String getName() {
+            return name;
+        }
+
+        @Override
+        public Object handle(JsonElement data) {
+            return data;
+        }
+    }
+
+    @Test
+    @DisplayName("ApiRegistry 与平台共享，start() 时冻结，Core 默认 API 在同一注册中心内")
+    void apiRegistryIsSharedAndFrozenOnStart() throws Exception {
+        try (DisabledConfigFixture ignored = new DisabledConfigFixture()) {
+            QueQiaoRuntime created = newRuntime();
+
+            ApiRegistry registry = created.getApiRegistry();
+            assertNotNull(registry, "create 之后应能拿到 ApiRegistry");
+            assertFalse(registry.isFrozen(), "start 之前必须允许注册");
+
+            // 平台 / Addon 在 start() 之前注册自己的 API
+            registry.register(new EchoApi("test.echo"));
+            assertTrue(registry.contains("test.echo"));
+
+            created.start();
+
+            assertTrue(registry.isFrozen(), "start() 应冻结注册中心");
+            assertTrue(registry.contains("test.echo"), "冻结不应影响已注册的 API");
+            assertTrue(
+                    registry.contains(ProtocolConstants.Api.SEND_TITLE),
+                    "Core 默认 API 应由协议层注册进同一个注册中心");
+            assertFalse(
+                    registry.contains(ProtocolConstants.Api.BROADCAST),
+                    "broadcast 属于\"由平台能力决定\"的 API，Core 默认不应注册");
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> registry.register(new EchoApi("test.late")),
+                    "冻结之后不允许再注册");
+
+            created.shutdown();
         }
     }
 

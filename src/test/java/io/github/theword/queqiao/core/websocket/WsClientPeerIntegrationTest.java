@@ -62,9 +62,18 @@ class WsClientPeerIntegrationTest {
         return scheduler;
     }
 
-    private static HandleProtocolMessage newDispatcher(PlatformStubs.RecordingApiService apiService) {
+    /**
+     * 构造分发入口，并注册广播能力
+     *
+     * <p>Core 默认不再注册 {@code broadcast} / {@code send_msg}（由平台按能力决定），
+     * 因此用广播当载体验证传输链路的用例需要自己注册。
+     */
+    private static HandleProtocolMessage newDispatcher(
+            PlatformStubs.RecordingApiService apiService,
+            PlatformStubs.RecordingBroadcastService broadcastService) {
         RconCommandExecutor rconExecutor = PlatformStubs.rconExecutorReturning("test-result");
-        return PlatformStubs.newDispatcher(LOGGER, GSON, apiService, rconExecutor);
+        return PlatformStubs.newDispatcher(
+                LOGGER, GSON, apiService, rconExecutor, PlatformStubs.registryWithBroadcast(broadcastService));
     }
 
     private static TestWsServer startServer(int port, int expectedConnections) throws Exception {
@@ -89,8 +98,9 @@ class WsClientPeerIntegrationTest {
         int port = findFreePort();
         ScheduledThreadPoolExecutor scheduler = newScheduler();
         PlatformStubs.RecordingApiService apiService = PlatformStubs.recordingApiService();
+        PlatformStubs.RecordingBroadcastService broadcastService = new PlatformStubs.RecordingBroadcastService();
         TestWsServer server = startServer(port, 1);
-        TestWsClient client = newClient(port, scheduler, newDispatcher(apiService), 1);
+        TestWsClient client = newClient(port, scheduler, newDispatcher(apiService, broadcastService), 1);
         try {
             client.connect();
 
@@ -109,8 +119,8 @@ class WsClientPeerIntegrationTest {
             assertEquals(ProtocolConstants.Api.BROADCAST, response.get("api").getAsString());
             assertEquals(ProtocolConstants.Status.SUCCESS, response.get("code").getAsInt());
             assertEquals("ws-test-1", response.get("echo").getAsString());
-            assertEquals(1, apiService.getBroadcasts().size());
-            assertEquals("{\"text\":\"hello from peer\"}", apiService.getBroadcasts().get(0));
+            assertEquals(1, broadcastService.getCount(), "应调用平台广播能力");
+            assertEquals("{\"text\":\"hello from peer\"}", broadcastService.getBroadcasts().get(0));
 
             String clientEvent = "{\"event\":\"player_join\",\"player\":\"Alex\"}";
             client.send(clientEvent);
@@ -131,7 +141,8 @@ class WsClientPeerIntegrationTest {
         TestWsClient client = newClient(
                 port,
                 scheduler,
-                newDispatcher(PlatformStubs.recordingApiService()),
+                newDispatcher(
+                        PlatformStubs.recordingApiService(), new PlatformStubs.RecordingBroadcastService()),
                 2);
         try {
             client.connect();

@@ -1,5 +1,6 @@
 package io.github.theword.queqiao.core.handle;
 
+import io.github.theword.queqiao.core.api.ApiRegistry;
 import io.github.theword.queqiao.core.constant.CommonConstants;
 import io.github.theword.queqiao.core.constant.ProtocolConstants;
 import io.github.theword.queqiao.core.payload.BasePayload;
@@ -61,12 +62,18 @@ public class HandleProtocolMessage {
             HandleApiService handleApiService,
             RconCommandExecutor rconCommandExecutor,
             RuntimeUtils utils,
-            ServerStatusCollector serverStatusCollector) {
+            ServerStatusCollector serverStatusCollector,
+            ApiRegistry apiRegistry) {
         this.logger = logger;
         this.gson = gson;
         // 与 WebsocketManager 一致：注入依赖为 null 属接线缺陷，在此快速失败
         this.utils = Objects.requireNonNull(utils, "utils");
-        this.protocolRouter = new ProtocolRouter(logger, handleApiService, rconCommandExecutor, serverStatusCollector);
+        this.protocolRouter = new ProtocolRouter(
+                logger,
+                handleApiService,
+                rconCommandExecutor,
+                serverStatusCollector,
+                Objects.requireNonNull(apiRegistry, "apiRegistry"));
     }
 
     /**

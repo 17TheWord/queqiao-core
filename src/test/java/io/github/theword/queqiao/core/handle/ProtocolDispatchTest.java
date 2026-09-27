@@ -1,9 +1,16 @@
 package io.github.theword.queqiao.core.handle;
 
+import io.github.theword.queqiao.core.api.ApiRegistry;
+import io.github.theword.queqiao.core.api.platform.PlayerMessageSender;
+import io.github.theword.queqiao.core.api.platform.PlayerProvider;
+import io.github.theword.queqiao.core.api.standard.PrivateMessageApi;
 import io.github.theword.queqiao.core.constant.ProtocolConstants;
+import io.github.theword.queqiao.core.event.model.PlayerModel;
 import io.github.theword.queqiao.core.exception.rcon.RconException;
 import io.github.theword.queqiao.core.protocol.RconCommandExecutor;
+import io.github.theword.queqiao.core.service.PrivateMessageService;
 import io.github.theword.queqiao.core.support.PlatformStubs;
+import io.github.theword.queqiao.core.support.PlayerStubs;
 import io.github.theword.queqiao.core.response.Response;
 import com.google.gson.Gson;
 import org.junit.jupiter.api.DisplayName;
@@ -11,9 +18,12 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.UUID;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -49,11 +59,36 @@ class ProtocolDispatchTest {
      * 分发一个请求并解析回 {@link Response}（指定平台实现与 RCON 执行器）
      */
     private static Response dispatch(String rawJson, HandleApiService apiService, RconCommandExecutor rconCommandExecutor) {
-        String responseJson = PlatformStubs.newDispatcher(LOGGER, GSON, apiService, rconCommandExecutor).handleHttpJson(rawJson);
+        return dispatch(rawJson, apiService, rconCommandExecutor, new ApiRegistry());
+    }
+
+    /**
+     * 分发一个请求并解析回 {@link Response}（指定平台实现、RCON 执行器与 API 注册中心）
+     */
+    private static Response dispatch(
+            String rawJson,
+            HandleApiService apiService,
+            RconCommandExecutor rconCommandExecutor,
+            ApiRegistry apiRegistry) {
+        String responseJson = PlatformStubs.newDispatcher(LOGGER, GSON, apiService, rconCommandExecutor, apiRegistry)
+                .handleHttpJson(rawJson);
         Response response = GSON.fromJson(responseJson, Response.class);
         assertNotNull(response, "分发结果不应为 null，原始响应=" + responseJson);
         assertNotNull(response.getCode(), "响应应带状态码，原始响应=" + responseJson);
         return response;
+    }
+
+    /**
+     * 构造一个已注册私聊 API 的注册中心
+     *
+     * <p>私聊已迁移到新的 API SPI：Core <b>不再默认注册</b> {@code send_private_msg}，
+     * 因此要验证它的协议语义，必须像平台适配器那样先注册
+     * {@link PrivateMessageApi}（未注册时协议层返回 404）。
+     */
+    private static ApiRegistry privateMessageRegistry(PlayerProvider provider, PlayerMessageSender sender) {
+        ApiRegistry registry = new ApiRegistry();
+        registry.register(new PrivateMessageApi(new PrivateMessageService(provider, sender)));
+        return registry;
     }
 
     // ------------------------------------------------------------------
@@ -150,10 +185,16 @@ class ProtocolDispatchTest {
     }
 
     @Test
-    @DisplayName("send_private_msg 的 nickname 为纯空白返回 400")
+    @DisplayName("send_private_msg 的 nickname 为纯空白返回 400（平台已注册私聊 API）")
     void sendPrivateMessageWithBlankNicknameReturnsBadRequest() {
         String body = "{\"api\":\"send_private_msg\",\"data\":{\"nickname\":\"   \",\"message\":\"hi\"}}";
-        assertEquals(BAD_REQUEST, dispatch(body).getCode().intValue());
+        ApiRegistry registry = privateMessageRegistry(
+                new PlayerStubs.FakePlayerProvider(), new PlayerStubs.RecordingPlayerMessageSender());
+
+        assertEquals(
+                BAD_REQUEST,
+                dispatch(body, PlatformStubs.noopApiService(), PlatformStubs.rconExecutorReturning(""), registry)
+                        .getCode().intValue());
     }
 
     @Test
@@ -174,34 +215,40 @@ class ProtocolDispatchTest {
     // ------------------------------------------------------------------
 
     @Test
-    @DisplayName("broadcast 成功路径真正调用平台实现")
+    @DisplayName("broadcast 成功路径真正调用平台 BroadcastService（已注册广播 API）")
     void broadcastReachesPlatform() {
-        PlatformStubs.RecordingApiService apiService = PlatformStubs.recordingApiService();
+        PlatformStubs.RecordingBroadcastService broadcastService = new PlatformStubs.RecordingBroadcastService();
 
         Response response = dispatch(
                 "{\"api\":\"broadcast\",\"data\":{\"message\":{\"text\":\"hi\"}}}",
-                apiService,
-                PlatformStubs.rconExecutorReturning(""));
+                PlatformStubs.noopApiService(),
+                PlatformStubs.rconExecutorReturning(""),
+                PlatformStubs.registryWithBroadcast(broadcastService));
 
         assertEquals(ProtocolConstants.Status.SUCCESS, response.getCode().intValue(), "合法请求应成功");
-        assertEquals(1, apiService.getBroadcasts().size(), "应调用平台广播：" + apiService.getBroadcasts());
+        assertEquals(1, broadcastService.getCount(), "应调用平台广播：" + broadcastService.getBroadcasts());
     }
 
     @Test
-    @DisplayName("send_private_msg 成功路径调用平台实现并归一化昵称")
+    @DisplayName("send_private_msg 成功路径调用平台 SPI 并归一化昵称")
     void privateMessageReachesPlatformWithTrimmedNickname() {
-        PlatformStubs.RecordingApiService apiService = PlatformStubs.recordingApiService();
+        PlayerModel steve = new PlayerModel("Steve", UUID.randomUUID());
+        PlayerStubs.FakePlayerProvider provider = new PlayerStubs.FakePlayerProvider(steve);
+        PlayerStubs.RecordingPlayerMessageSender sender = new PlayerStubs.RecordingPlayerMessageSender();
+        ApiRegistry registry = privateMessageRegistry(provider, sender);
 
         Response response = dispatch(
                 "{\"api\":\"send_private_msg\",\"data\":{\"nickname\":\"  Steve  \",\"message\":{\"text\":\"hi\"}}}",
-                apiService,
-                PlatformStubs.rconExecutorReturning(""));
+                PlatformStubs.noopApiService(),
+                PlatformStubs.rconExecutorReturning(""),
+                registry);
 
         assertEquals(ProtocolConstants.Status.SUCCESS, response.getCode().intValue(), "合法请求应成功");
-        assertEquals(1, apiService.getPrivateMessages().size(), "应调用平台私聊：" + apiService.getPrivateMessages());
-        assertTrue(
-                apiService.getPrivateMessages().get(0).contains("nickname=Steve"),
-                "昵称应被 trim 后传递：" + apiService.getPrivateMessages());
+        assertEquals(1, sender.getSendCount(), "应调用平台发送能力一次：" + sender.getTargets());
+        assertSame(
+                steve,
+                sender.getLastTarget(),
+                "昵称 trim 后应命中 Steve —— 归一化规则由 Core 决定");
     }
 
     @Test

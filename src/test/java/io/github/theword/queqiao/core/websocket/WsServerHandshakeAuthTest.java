@@ -115,8 +115,10 @@ class WsServerHandshakeAuthTest {
     void websocketRequestReachesHandleApiService() throws Exception {
         int port = findFreePort();
         PlatformStubs.RecordingApiService apiService = PlatformStubs.recordingApiService();
+        PlatformStubs.RecordingBroadcastService broadcastService = new PlatformStubs.RecordingBroadcastService();
         HandleProtocolMessage dispatcher = PlatformStubs.newDispatcher(
-                LOGGER, GSON, apiService, PlatformStubs.rconExecutorReturning(""));
+                LOGGER, GSON, apiService, PlatformStubs.rconExecutorReturning(""),
+                PlatformStubs.registryWithBroadcast(broadcastService));
         WsServer server = new WsServer(
                 new InetSocketAddress("127.0.0.1", port), LOGGER, dispatcher, SERVER_NAME, ACCESS_TOKEN, true);
         server.start();
@@ -135,8 +137,8 @@ class WsServerHandshakeAuthTest {
             assertEquals(ProtocolConstants.Status.SUCCESS, response.getCode().intValue());
             assertEquals(ProtocolConstants.Api.BROADCAST, response.getApi());
             assertEquals("ws-server-api", response.getEcho());
-            assertEquals(1, apiService.getBroadcasts().size());
-            assertEquals("{\"text\":\"from websocket\"}", apiService.getBroadcasts().get(0));
+            assertEquals(1, broadcastService.getCount(), "应调用平台广播能力");
+            assertEquals("{\"text\":\"from websocket\"}", broadcastService.getBroadcasts().get(0));
         } finally {
             client.close();
             server.stop(1000);
