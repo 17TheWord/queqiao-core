@@ -3,7 +3,6 @@ package io.github.theword.queqiao.core.utils;
 import io.github.theword.queqiao.core.config.ConfigKeys;
 import io.github.theword.queqiao.core.config.schema.ConfigRegistry;
 import io.github.theword.queqiao.core.config.Config;
-import io.github.theword.queqiao.core.handle.HandleCommandReturnMessageService;
 import io.github.theword.queqiao.core.handle.HandleProtocolMessage;
 import io.github.theword.queqiao.core.support.PlatformStubs;
 import io.github.theword.queqiao.core.websocket.WsClient;
@@ -91,7 +90,7 @@ class WebsocketManagerLifecycleTest {
         return new WebsocketManager(
                 LOGGER,
                 GSON,
-                new NoopReturnMessageService(),
+                PlatformStubs.noopPlatformContext(),
                 HANDLE_PROTOCOL_MESSAGE,
                 config,
                 PlatformStubs.newRuntimeUtils(LOGGER));
@@ -218,18 +217,4 @@ class WebsocketManagerLifecycleTest {
         }
     }
 
-    /**
-     * 空实现，避免测试依赖平台实现
-     */
-    private static final class NoopReturnMessageService extends HandleCommandReturnMessageService {
-
-        @Override
-        public void handleCommandReturnMessage(Object commandReturner, String message) {
-        }
-
-        @Override
-        public boolean hasPermission(Object commandReturner, String permissionNode) {
-            return true;
-        }
-    }
 }

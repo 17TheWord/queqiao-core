@@ -61,8 +61,7 @@
 | `WsClient` | 新增 `ScheduledExecutorService` / `ReconnectPolicy` / `HandleProtocolMessage` 参数；移除 `gson`、`reconnectMaxTimes`、`reconnectInterval` |
 | `WsServer` | 以 `HandleProtocolMessage` 替换 `gson` 参数 |
 | `WebsocketManager` | 新增 `HandleProtocolMessage` 参数 |
-| `ProtocolRouter` | 新增 `Logger` 参数（不再依赖全局状态） |
-| `AbstractProtocolHandler` 及全部 7 个 handler | 新增 `Logger` 参数 |
+| `ProtocolRouter` | 构造器改为 `(Logger, Collection<Api<?, ?>>)`；不再自行构造处理器 |
 
 #### 5. 配置系统重写为「Schema 驱动」的单文件模型
 
@@ -107,6 +106,41 @@
 **升级提示**：`GlobalContext.getConfig()` 的**返回类型名仍是 `Config`**，但语义已完全改变——
 它不再是原来的 POJO 门面，而是"配置运行时值存储"。此前依赖 `config.getWebsocketServer().getHost()`
 这类调用链的代码需要改写为 `config.get(ConfigKeys.WebSocket.HOST)`。
+
+#### 7. 协议层改为「Api 注册制」，两个 handle 抽象类被移除
+
+协议处理从"每个接口一个 Handler 类 + 平台实现一个胖接口"改为
+"**Api 自描述 + 由使用方决定注册哪些**"。
+
+| 移除 | 替代 |
+| --- | --- |
+| `handle.HandleApiService`（4 个方法的胖接口） | `platform.AbstractPlatformContext` 的 `broadcast` / `sendTitle` / `sendActionBar` / `sendPrivateMessage` |
+| `handle.HandleCommandReturnMessageService` | `platform.AbstractPlatformContext` 的 `checkPermission` / `returnCallBackMessage` |
+| `protocol.AbstractProtocolHandler` 及全部 7 个 Handler | `api.Api<P, R>`，内置实现见 `api.DefaultApis` |
+| `api.ApiRegistry`（此前未接线） | 直接向 `ProtocolRouter` 传入 Api 集合 |
+
+**`QueQiaoRuntime.create` 收敛为 3 个参数**：
+
+```java
+QueQiaoRuntime.create(
+    Consumer<ConfigRegistry> configurer,             // 可空：启动期 Schema 注册
+    AbstractPlatformContext<?, ?, ?, ?> platformContext,
+    Consumer<List<Api<?, ?>>> apiConfigurer);        // 可空：null = 启用内置完整批次
+```
+
+- `modServer` / `serverType` / `serverVersion` 不再作为参数传入，改由
+  `AbstractPlatformContext#isModServer()` / `getServerType()` / `getServerVersion()` 提供。
+  后两者只要求 **`start()` 之后**可用，因此平台可以先 `create()`、等服务器就绪再 `start()`。
+- `ProtocolRouter` 构造器改为 `(Logger, Collection<Api<?, ?>>)`；
+  api 名重复会在**构造期**抛 `IllegalArgumentException`（取代此前的静默覆盖）。
+- **未注册的 api 返回 404**——"自愿注册"直接复用既有的 404 分支，无需新逻辑。
+
+**行为变化**：
+- `send_private_msg` 的响应改由 core 构造：找不到玩家返回 `Target player not found.`；
+  成功时 `target_player` 只填 `nickname` 与 `uuid`（不再由平台回填其它字段）。
+- 平台未实现标题 / ActionBar 时，`send_title` / `send_actionbar` 返回 **503**（此前落到 500）。
+- `AbstractPlatformContext#checkPermission` / `returnCallBackMessage` 的入参类型是 `Object`，
+  平台侧需保证传入的确实是本平台的命令源类型；类型不符会抛 `ClassCastException`。
 
 ### 新增
 

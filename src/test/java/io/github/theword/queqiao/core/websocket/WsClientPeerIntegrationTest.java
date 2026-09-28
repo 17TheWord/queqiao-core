@@ -62,9 +62,9 @@ class WsClientPeerIntegrationTest {
         return scheduler;
     }
 
-    private static HandleProtocolMessage newDispatcher(PlatformStubs.RecordingApiService apiService) {
+    private static HandleProtocolMessage newDispatcher(PlatformStubs.RecordingPlatformContext platformContext) {
         RconCommandExecutor rconExecutor = PlatformStubs.rconExecutorReturning("test-result");
-        return PlatformStubs.newDispatcher(LOGGER, GSON, apiService, rconExecutor);
+        return PlatformStubs.newDispatcher(LOGGER, GSON, platformContext, rconExecutor);
     }
 
     private static TestWsServer startServer(int port, int expectedConnections) throws Exception {
@@ -88,9 +88,9 @@ class WsClientPeerIntegrationTest {
     void connectsExchangesMessagesAndDispatchesApi() throws Exception {
         int port = findFreePort();
         ScheduledThreadPoolExecutor scheduler = newScheduler();
-        PlatformStubs.RecordingApiService apiService = PlatformStubs.recordingApiService();
+        PlatformStubs.RecordingPlatformContext platformContext = PlatformStubs.recordingPlatformContext();
         TestWsServer server = startServer(port, 1);
-        TestWsClient client = newClient(port, scheduler, newDispatcher(apiService), 1);
+        TestWsClient client = newClient(port, scheduler, newDispatcher(platformContext), 1);
         try {
             client.connect();
 
@@ -109,8 +109,8 @@ class WsClientPeerIntegrationTest {
             assertEquals(ProtocolConstants.Api.BROADCAST, response.get("api").getAsString());
             assertEquals(ProtocolConstants.Status.SUCCESS, response.get("code").getAsInt());
             assertEquals("ws-test-1", response.get("echo").getAsString());
-            assertEquals(1, apiService.getBroadcasts().size());
-            assertEquals("{\"text\":\"hello from peer\"}", apiService.getBroadcasts().get(0));
+            assertEquals(1, platformContext.getBroadcasts().size());
+            assertEquals("{\"text\":\"hello from peer\"}", platformContext.getBroadcasts().get(0));
 
             String clientEvent = "{\"event\":\"player_join\",\"player\":\"Alex\"}";
             client.send(clientEvent);
@@ -131,7 +131,7 @@ class WsClientPeerIntegrationTest {
         TestWsClient client = newClient(
                 port,
                 scheduler,
-                newDispatcher(PlatformStubs.recordingApiService()),
+                newDispatcher(PlatformStubs.recordingPlatformContext()),
                 2);
         try {
             client.connect();

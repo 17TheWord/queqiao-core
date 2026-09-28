@@ -1,7 +1,7 @@
 package io.github.theword.queqiao.core.command.subCommand;
 
 import io.github.theword.queqiao.core.command.SubCommand;
-import io.github.theword.queqiao.core.handle.HandleCommandReturnMessageService;
+import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
 import org.slf4j.Logger;
 
 import java.util.List;
@@ -23,10 +23,10 @@ public class ReloadCommand extends SubCommand {
     private final Consumer<Object> reloadAction;
 
     public ReloadCommand(
-            HandleCommandReturnMessageService returnMessageService,
+            AbstractPlatformContext<?, ?, ?, ?> platformContext,
             Logger logger,
             Consumer<Object> reloadAction) {
-        super(returnMessageService, logger);
+        super(platformContext, logger);
         this.reloadAction = Objects.requireNonNull(reloadAction, "reloadAction");
     }
 

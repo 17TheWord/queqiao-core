@@ -3,7 +3,7 @@ package io.github.theword.queqiao.core.command.subCommand.server;
 import io.github.theword.queqiao.core.command.SubCommand;
 import io.github.theword.queqiao.core.config.ConfigKeys;
 import io.github.theword.queqiao.core.config.Config;
-import io.github.theword.queqiao.core.handle.HandleCommandReturnMessageService;
+import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
 import io.github.theword.queqiao.core.utils.Tool;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
 import io.github.theword.queqiao.core.websocket.WsServer;
@@ -28,11 +28,11 @@ public class InfoCommand extends SubCommand {
     private final WebsocketManager websocketManager;
 
     public InfoCommand(
-            HandleCommandReturnMessageService returnMessageService,
+            AbstractPlatformContext<?, ?, ?, ?> platformContext,
             Logger logger,
             Config config,
             WebsocketManager websocketManager) {
-        super(returnMessageService, logger);
+        super(platformContext, logger);
         this.config = Objects.requireNonNull(config, "config");
         this.websocketManager = Objects.requireNonNull(
                 websocketManager, "websocketManager 不能为 null：命令树须在 Runtime.start() 之后构建");
@@ -71,20 +71,20 @@ public class InfoCommand extends SubCommand {
     @Override
     protected void onExecute(Object commandReturner, List<String> args) {
         if (!config.get(ConfigKeys.WebSocket.ENABLE)) {
-            returnMessageService.sendReturnMessage(
+            platformContext.returnCallBackMessage(
                     commandReturner, "Websocket Server 配置项未启用，如需开启，请在 config.yml 中启用 WebsocketServer 配置项");
-            returnMessageService.sendReturnMessage(
+            platformContext.returnCallBackMessage(
                     commandReturner, Tool.format("配置项中地址为 {}:{}", config.get(ConfigKeys.WebSocket.HOST), config.get(ConfigKeys.WebSocket.PORT)));
             return;
         }
 
         WsServer wsServer = websocketManager.getWsServer();
         if (wsServer == null) {
-            returnMessageService.sendReturnMessage(commandReturner, "Websocket Server 为 null，查询失败");
+            platformContext.returnCallBackMessage(commandReturner, "Websocket Server 为 null，查询失败");
             return;
         }
 
-        returnMessageService.sendReturnMessage(
+        platformContext.returnCallBackMessage(
                 commandReturner,
                 Tool.format(
                         "当前 Websocket Server 已开启，监听地址为 {}:{}",
@@ -94,11 +94,11 @@ public class InfoCommand extends SubCommand {
         // 取一次快照后统一使用，避免三次读取之间集合变化导致输出自相矛盾
         List<WebSocket> connections = new ArrayList<>(wsServer.getConnections());
         if (connections.isEmpty()) {
-            returnMessageService.sendReturnMessage(commandReturner, "当前暂无 Websocket 连接到该 Server");
+            platformContext.returnCallBackMessage(commandReturner, "当前暂无 Websocket 连接到该 Server");
             return;
         }
 
-        returnMessageService.sendReturnMessage(
+        platformContext.returnCallBackMessage(
                 commandReturner, Tool.format("当前 Websocket Server 已有 {} 个连接", connections.size()));
 
         int count = 0;
@@ -106,9 +106,9 @@ public class InfoCommand extends SubCommand {
             count++;
             InetSocketAddress remoteAddress = webSocket.getRemoteSocketAddress();
             if (remoteAddress == null) {
-                returnMessageService.sendReturnMessage(commandReturner, Tool.format("{} 来自未知地址的连接", count));
+                platformContext.returnCallBackMessage(commandReturner, Tool.format("{} 来自未知地址的连接", count));
             } else {
-                returnMessageService.sendReturnMessage(
+                platformContext.returnCallBackMessage(
                         commandReturner,
                         Tool.format("{} 来自 {}:{} 的连接", count, remoteAddress.getHostString(), remoteAddress.getPort()));
             }

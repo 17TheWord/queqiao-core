@@ -12,15 +12,16 @@ import io.github.theword.queqiao.core.config.io.ConfigLoader;
 import io.github.theword.queqiao.core.config.io.ConfigStore;
 import io.github.theword.queqiao.core.config.io.ConfigWriteSnapshot;
 import io.github.theword.queqiao.core.config.io.ConfigWriter;
+import io.github.theword.queqiao.core.api.Api;
+import io.github.theword.queqiao.core.api.DefaultApis;
 import io.github.theword.queqiao.core.constant.BaseConstant;
 import io.github.theword.queqiao.core.constant.CommandConstant;
 import io.github.theword.queqiao.core.constant.WebsocketConstantMessage;
 import io.github.theword.queqiao.core.event.base.BaseEvent;
 import io.github.theword.queqiao.core.exception.rcon.RconException;
-import io.github.theword.queqiao.core.handle.HandleApiService;
-import io.github.theword.queqiao.core.handle.HandleCommandReturnMessageService;
 import io.github.theword.queqiao.core.handle.HandleProtocolMessage;
 import io.github.theword.queqiao.core.localize.LanguageService;
+import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
 import io.github.theword.queqiao.core.protocol.handler.status.ServerStatusCollector;
 import io.github.theword.queqiao.core.rcon.RconClient;
 import io.github.theword.queqiao.core.utils.GsonUtils;
@@ -36,6 +37,8 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -79,11 +82,6 @@ public final class QueQiaoRuntime {
     public final RuntimeUtils utils;
 
     private final Gson gson;
-    private final HandleApiService handleApiService;
-    private final HandleCommandReturnMessageService handleCommandReturnMessageService;
-    private final String serverVersion;
-    private final String serverType;
-    private final boolean modServer;
 
     /**
      * 协议分发入口
@@ -143,6 +141,8 @@ public final class QueQiaoRuntime {
      */
     private volatile Logger logger;
 
+    public final AbstractPlatformContext<?, ?, ?, ?> platformContext;
+
     private volatile WebsocketManager websocketManager;
 
     /** 串行化 Runtime 对 RCON 客户端的创建、替换和关闭。 */
@@ -155,19 +155,13 @@ public final class QueQiaoRuntime {
     private volatile LanguageService languageService;
 
     private QueQiaoRuntime(
-            boolean modServer,
-            String serverVersion,
-            String serverType,
-            HandleApiService handleApiService,
-            HandleCommandReturnMessageService handleCommandReturnMessageService,
-            Logger logger) {
-        this.modServer = modServer;
-        this.serverVersion = serverVersion;
-        this.serverType = serverType;
-        this.handleApiService = handleApiService;
-        this.handleCommandReturnMessageService = handleCommandReturnMessageService;
+            Logger logger,
+            AbstractPlatformContext<?, ?, ?, ?> platformContext,
+            Consumer<List<Api<?, ?>>> apiConfigurer
+    ) {
         this.logger = logger;
         this.gson = GsonUtils.getGson();
+        this.platformContext = platformContext;
         // 配置系统接线：Schema 只注册一次，Config 只建一份，全局唯一配置状态
         this.configRegistry = new ConfigRegistry();
         ConfigKeys.registerAll(this.configRegistry);
@@ -175,17 +169,20 @@ public final class QueQiaoRuntime {
         this.configDocument = ConfigDocument.empty();
         // Runtime 作用域辅助能力：只依赖 Config 与 Logger，不反向持有 Runtime
         this.utils = new RuntimeUtils(this.config, this.logger);
-        // 状态采集器为实例级：先于协议层创建，再注入给协议分发链
-        this.serverStatusCollector = new ServerStatusCollector(serverType, serverVersion, logger);
-        // 平台 API 实现与 RCON 执行器由协议层注入，协议层因此不再依赖静态全局状态。
+        // 状态采集器为实例级：先于协议层创建，再注入给协议分发链。
+        // 平台类型与版本以 Supplier 形式传入，采集快照时才现取——这样平台可以先 create()
+        // 再等服务器启动完成，不必在构造瞬间就拿到版本。
+        this.serverStatusCollector = new ServerStatusCollector(
+                platformContext::getServerType, platformContext::getServerVersion, logger);
+        // 协议层接线：先铺默认批次，再交给使用方自由增删（自愿注册）。
         // 这里传入 this::sendRconCommand 是安全的：该 lambda 只在收到请求时才会被调用，
         // 此时对象早已构造完成（构造期间不会被发布）。
-        this.handleProtocolMessage = new HandleProtocolMessage(
-                logger, this.gson, handleApiService, this::sendRconCommand, this.utils, this.serverStatusCollector);
-    }
-
-    public static QueQiaoRuntime create(boolean modServer, String serverVersion, String serverType, HandleApiService handleApiService, HandleCommandReturnMessageService handleCommandReturnMessageService) {
-        return create(modServer, serverVersion, serverType, handleApiService, handleCommandReturnMessageService, null);
+        List<Api<?, ?>> apis = new ArrayList<>(
+                DefaultApis.all(platformContext, this.serverStatusCollector, this::sendRconCommand, logger));
+        if (apiConfigurer != null) {
+            apiConfigurer.accept(apis);
+        }
+        this.handleProtocolMessage = new HandleProtocolMessage(logger, this.gson, apis, this.utils);
     }
 
     /**
@@ -195,28 +192,24 @@ public final class QueQiaoRuntime {
      * 若不在此拦截，会拖到"第一条协议请求"或"第一条命令"执行时才抛 NPE，定位成本很高。
      *
      * @param configurer 可选的启动期 Schema 注册回调
+     * @param platformContext 平台上下文；服务端类型、版本、是否模组端均由它提供，
+     *                        因此不再作为独立参数传入
+     * @param apiConfigurer 可选的 Api 装配回调；收到的是<b>已铺好默认批次</b>的可变列表，
+     *                      可自由增删以实现"自愿注册"
      * @return 尚未启动的运行时
      */
     public static QueQiaoRuntime create(
-            boolean modServer,
-            String serverVersion,
-            String serverType,
-            HandleApiService handleApiService,
-            HandleCommandReturnMessageService handleCommandReturnMessageService,
-            Consumer<ConfigRegistry> configurer) {
+            Consumer<ConfigRegistry> configurer,
+            AbstractPlatformContext<?, ?, ?, ?> platformContext,
+            Consumer<List<Api<?, ?>>> apiConfigurer
+    ) {
         Objects.requireNonNull(
-                handleApiService, "handleApiService 不能为 null：平台必须提供 HandleApiService 实现");
-        Objects.requireNonNull(
-                handleCommandReturnMessageService,
-                "handleCommandReturnMessageService 不能为 null：平台必须提供 HandleCommandReturnMessageService 实现");
+                platformContext, "platformContext 不能为 null：平台必须提供 AbstractPlatformContext 实现");
         Logger runtimeLogger = LoggerFactory.getLogger(BaseConstant.MODULE_NAME);
         QueQiaoRuntime runtime = new QueQiaoRuntime(
-                modServer,
-                serverVersion,
-                serverType,
-                handleApiService,
-                handleCommandReturnMessageService,
-                runtimeLogger
+                runtimeLogger,
+                platformContext,
+                apiConfigurer
         );
         if (configurer != null) {
             configurer.accept(runtime.configRegistry);
@@ -236,7 +229,7 @@ public final class QueQiaoRuntime {
      * </ul>
      */
     private void loadConfig() {
-        Path configPath = ConfigStore.resolveConfigPath(modServer);
+        Path configPath = ConfigStore.resolveConfigPath(platformContext.isModServer());
         ConfigFileReader.Result result = ConfigFileReader.read(configPath);
         ConfigLoader loader = new ConfigLoader(configRegistry, config);
 
@@ -357,7 +350,7 @@ public final class QueQiaoRuntime {
         logger.info(BaseConstant.INITIALIZED);
 
         messagePrefixJsonElement = initMessagePrefixJsonObject(config.get(ConfigKeys.MESSAGE_PREFIX));
-        languageService = new LanguageService(modServer, logger, config);
+        languageService = new LanguageService(platformContext.isModServer(), logger, config);
         serverStatusCollector.initPingTarget();
         serverStatusCollector.startRefreshScheduler(
                 config.get(ConfigKeys.Status.REFRESH_INTERVAL_SECONDS));
@@ -396,9 +389,8 @@ public final class QueQiaoRuntime {
                 manager.restart(config, commandReturner);
             }
             restartRconClient();
-            if (handleCommandReturnMessageService != null) {
-                handleCommandReturnMessageService.sendReturnMessage(commandReturner, CommandConstant.RELOAD_CONFIG);
-            }
+            // 空值守卫在 returnCallBackMessage 内部（命令源为 null 时直接返回）
+            platformContext.returnCallBackMessage(commandReturner, CommandConstant.RELOAD_CONFIG);
         }
     }
 
@@ -482,12 +474,15 @@ public final class QueQiaoRuntime {
             return;
         }
         // 事件对象的构造不再读全局状态；服务器上下文在发布前统一填充
-        baseEvent.fillServerContext(config.get(ConfigKeys.SERVER_NAME), serverVersion, serverType);
+        baseEvent.fillServerContext(
+                config.get(ConfigKeys.SERVER_NAME),
+                platformContext.getServerVersion(),
+                platformContext.getServerType());
         manager.sendEvent(baseEvent);
     }
 
     private void initWebsocketManager() {
-        websocketManager = new WebsocketManager(logger, gson, handleCommandReturnMessageService, handleProtocolMessage, config, utils);
+        websocketManager = new WebsocketManager(logger, gson, platformContext, handleProtocolMessage, config, utils);
         websocketManager.start(null);
     }
 
@@ -648,20 +643,18 @@ public final class QueQiaoRuntime {
         return serverStatusCollector;
     }
 
-    public HandleApiService getHandleApiService() {
-        return handleApiService;
-    }
-
-    public HandleCommandReturnMessageService getHandleCommandReturnMessageService() {
-        return handleCommandReturnMessageService;
-    }
-
+    /**
+     * @return 服务端版本，由平台上下文提供（延迟获取，{@code start()} 之后可用）
+     */
     public String getServerVersion() {
-        return serverVersion;
+        return platformContext.getServerVersion();
     }
 
+    /**
+     * @return 平台类型，由平台上下文提供
+     */
     public String getServerType() {
-        return serverType;
+        return platformContext.getServerType();
     }
 
     public Gson getGson() {

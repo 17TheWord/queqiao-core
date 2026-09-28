@@ -19,10 +19,16 @@ java {
 
 tasks.compileJava {
     options.encoding = "UTF-8"
+    // 强制 Java 8 的语法与 API 表面。
+    // 构建使用 JDK 17，若只设 source/target 而不设 release，误用 List.of() 之类的
+    // Java 9+ API 会静默编译通过，直到在 Java 8 运行时才抛 NoSuchMethodError——
+    // 而本项目要支持到 1.7.10（Java 8），这类问题必须在此拦下。
+    options.release.set(8)
 }
 
 tasks.compileTestJava {
     options.encoding = "UTF-8"
+    options.release.set(8)
 }
 
 repositories {

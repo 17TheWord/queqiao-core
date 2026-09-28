@@ -1,15 +1,15 @@
 package io.github.theword.queqiao.core.command.subCommand.client;
 
 import io.github.theword.queqiao.core.command.SubCommand;
-import io.github.theword.queqiao.core.handle.HandleCommandReturnMessageService;
+import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
 import org.slf4j.Logger;
 
 import java.util.List;
 
 public class ReconnectAllCommand extends SubCommand {
 
-    public ReconnectAllCommand(HandleCommandReturnMessageService returnMessageService, Logger logger) {
-        super(returnMessageService, logger);
+    public ReconnectAllCommand(AbstractPlatformContext<?, ?, ?, ?> platformContext, Logger logger) {
+        super(platformContext, logger);
     }
 
     /**

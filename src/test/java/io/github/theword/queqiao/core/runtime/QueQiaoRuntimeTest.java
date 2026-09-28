@@ -1,8 +1,7 @@
 package io.github.theword.queqiao.core.runtime;
 
-import io.github.theword.queqiao.core.handle.HandleApiService;
-import io.github.theword.queqiao.core.handle.HandleCommandReturnMessageService;
-import io.github.theword.queqiao.core.response.PrivateMessageResponse;
+import io.github.theword.queqiao.core.platform.PlatformContext;
+import io.github.theword.queqiao.core.platform.TestServer;
 import com.google.gson.JsonElement;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -15,53 +14,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * {@link QueQiaoRuntime} 消息前缀解析测试
  *
- * <p>本测试由原静态全局上下文门面的测试迁移而来：其用例一直在测试 Runtime 本身，
+ * <p>
+ * 本测试由原静态全局上下文门面的测试迁移而来：其用例一直在测试 Runtime 本身，
  * 门面只是入口。随门面删除，本测试直接构造 Runtime，不再经过任何静态入口。
  */
 class QueQiaoRuntimeTest {
 
     /**
-     * 平台侧 API 实现，测试中不需要真实行为
-     */
-    private static final HandleApiService NOOP_API_SERVICE = new HandleApiService() {
-        @Override
-        public void handleBroadcastMessage(JsonElement jsonData) {
-        }
-
-        @Override
-        public void handleSendTitleMessage(JsonElement titlePayload, JsonElement subTitlePayload, int fadeIn, int stay, int fadeOut) {
-        }
-
-        @Override
-        public void handleSendActionBarMessage(JsonElement jsonData) {
-        }
-
-        @Override
-        public PrivateMessageResponse handleSendPrivateMessage(String nickname, UUID uuid, JsonElement jsonData) {
-            return null;
-        }
-    };
-
-    /**
-     * 平台侧命令返回消息实现，测试中不需要真实行为
-     */
-    private static final HandleCommandReturnMessageService NOOP_RETURN_MESSAGE_SERVICE =
-            new HandleCommandReturnMessageService() {
-                @Override
-                public void handleCommandReturnMessage(Object commandReturner, String message) {
-                }
-
-                @Override
-                public boolean hasPermission(Object commandReturner, String permissionNode) {
-                    return true;
-                }
-            };
-
-    /**
      * 未启动的 Runtime：构造不触发文件系统与线程
      */
-    private final QueQiaoRuntime runtime =
-            QueQiaoRuntime.create(false, "1.20.1", "test", NOOP_API_SERVICE, NOOP_RETURN_MESSAGE_SERVICE);
+    private final QueQiaoRuntime runtime = QueQiaoRuntime.create(
+        null,
+        new PlatformContext(new TestServer()),
+        null
+    );
 
     @Test
     @DisplayName("实际 Runtime 将普通文本前缀转换为黄色文本组件")

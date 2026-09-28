@@ -13,11 +13,9 @@
 1. 在服务端启动完成后阶段创建并启动 Runtime：
    ```java
    QueQiaoRuntime runtime = QueQiaoRuntime.create(
-       /* modServer */ true,
-       /* serverVersion */ "1.20.1",
-       /* serverType */ "fabric",
-       /* handleApiService */ new YourHandleApiImpl(),
-       /* handleCommandReturnMessageService */ new YourCmdReturnImpl()
+       /* configurer     */ null,                       // 可选：启动期 Schema 注册
+       /* platformContext */ new YourPlatformContext(), // 平台唯一接入点
+       /* apiConfigurer  */ null                        // null = 启用内置的完整 API 批次
    );
    runtime.start();
    // 只有 start() 成功后再保存引用：启动失败时 Runtime 已自行清理已启动的资源
@@ -25,9 +23,15 @@
    ```
    类型为 `io.github.theword.queqiao.core.runtime.QueQiaoRuntime`。
 2. 接口实现：
-    - `io.github.theword.queqiao.core.handle.HandleApiService`： 实现发送广播、title、actionbar、私聊等实际逻辑（调用原生
-      API）。
-    - `io.github.theword.queqiao.core.handle.HandleCommandReturnMessageService`： 用于在控制台或指令执行者上下文中返回信息与权限判定。
+    - `io.github.theword.queqiao.core.platform.AbstractPlatformContext`：**平台唯一接入点**。
+      实现其中的原语（JSON → 平台组件、在线玩家、按玩家发送、权限判定、命令回执），
+      并声明平台类型（`getServerType()`）与服务端版本（`getServerVersion()`）。
+      标题与 ActionBar 有默认实现（表示"不支持"，返回 503），支持时覆盖即可。
+    - `io.github.theword.queqiao.core.api.DefaultApis`：内置的协议 API 批次
+      （`broadcast`/`send_msg`、`send_title`、`send_actionbar`、`send_private_msg`、
+      `send_command`、`send_rcon_command`、`get_status`）。默认全部启用；
+      想裁剪或追加自定义 API，在 `apiConfigurer` 里增删列表即可——
+      **未注册的 api 一律返回 404**。
     - `io.github.theword.queqiao.core.command.subCommand`：实现各 `XxxAbstract` 子命令并注册。
 3. 在服务端关闭前调用：
    ```java
@@ -39,7 +43,7 @@
 > **迁移提示**：`GlobalContext` 已移除。原本通过它访问的能力改为从 Runtime 实例获取，
 > 例如 `runtime.sendEvent(...)`、`runtime.getConfig()`、`runtime.getLogger()`；
 > 命令层所需的依赖请从该 Runtime 显式取出后注入（`Config` / `Logger` /
-> `WebsocketManager` / `HandleCommandReturnMessageService`），
+> `WebsocketManager` / `AbstractPlatformContext`），
 > 且命令树须在 `runtime.start()` 之后构建。
 
 ## 接口说明
@@ -68,7 +72,9 @@
     git clone https://github.com/17TheWord/QueQiao.git
     ```
 
-2. `JDK`：为支持 `1.7.10` - `1.12.2`，项目使用 `JDK 8`。
+2. `JDK`：为支持 `1.7.10` - `1.16.5`（Java 8），项目编译目标为 **Java 8**。
+   构建脚本显式设置了 `options.release = 8`，因此误用 `List.of()` 等 Java 9+ API
+   会在编译期直接失败，而不会拖到 Java 8 运行时才 `NoSuchMethodError`。
 
 3. 使用 `IDE` 打开项目（推荐 `IntelliJ IDEA`），或使用 `gradlew`。
 

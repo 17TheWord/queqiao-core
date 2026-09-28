@@ -111,12 +111,12 @@ class WsServerHandshakeAuthTest {
     }
 
     @Test
-    @DisplayName("真实 WebSocket 请求经过 WsServer 分发到 HandleApiService")
-    void websocketRequestReachesHandleApiService() throws Exception {
+    @DisplayName("真实 WebSocket 请求经过 WsServer 分发到平台上下文")
+    void websocketRequestReachesPlatformContext() throws Exception {
         int port = findFreePort();
-        PlatformStubs.RecordingApiService apiService = PlatformStubs.recordingApiService();
+        PlatformStubs.RecordingPlatformContext platformContext = PlatformStubs.recordingPlatformContext();
         HandleProtocolMessage dispatcher = PlatformStubs.newDispatcher(
-                LOGGER, GSON, apiService, PlatformStubs.rconExecutorReturning(""));
+                LOGGER, GSON, platformContext, PlatformStubs.rconExecutorReturning(""));
         WsServer server = new WsServer(
                 new InetSocketAddress("127.0.0.1", port), LOGGER, dispatcher, SERVER_NAME, ACCESS_TOKEN, true);
         server.start();
@@ -135,8 +135,8 @@ class WsServerHandshakeAuthTest {
             assertEquals(ProtocolConstants.Status.SUCCESS, response.getCode().intValue());
             assertEquals(ProtocolConstants.Api.BROADCAST, response.getApi());
             assertEquals("ws-server-api", response.getEcho());
-            assertEquals(1, apiService.getBroadcasts().size());
-            assertEquals("{\"text\":\"from websocket\"}", apiService.getBroadcasts().get(0));
+            assertEquals(1, platformContext.getBroadcasts().size());
+            assertEquals("{\"text\":\"from websocket\"}", platformContext.getBroadcasts().get(0));
         } finally {
             client.close();
             server.stop(1000);

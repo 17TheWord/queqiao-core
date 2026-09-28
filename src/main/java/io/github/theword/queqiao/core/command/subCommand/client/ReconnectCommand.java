@@ -2,7 +2,7 @@ package io.github.theword.queqiao.core.command.subCommand.client;
 
 import io.github.theword.queqiao.core.command.SubCommand;
 import io.github.theword.queqiao.core.constant.CommandConstant;
-import io.github.theword.queqiao.core.handle.HandleCommandReturnMessageService;
+import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
 import io.github.theword.queqiao.core.utils.Tool;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
 import io.github.theword.queqiao.core.websocket.WsClient;
@@ -19,13 +19,13 @@ public class ReconnectCommand extends SubCommand {
     private final WebsocketManager websocketManager;
 
     public ReconnectCommand(
-            HandleCommandReturnMessageService returnMessageService,
+            AbstractPlatformContext<?, ?, ?, ?> platformContext,
             Logger logger,
             WebsocketManager websocketManager) {
-        super(returnMessageService, logger);
+        super(platformContext, logger);
         this.websocketManager = Objects.requireNonNull(
                 websocketManager, "websocketManager 不能为 null：命令树须在 Runtime.start() 之后构建");
-        addChild(new ReconnectAllCommand(returnMessageService, logger));
+        addChild(new ReconnectAllCommand(platformContext, logger));
     }
 
     /**
@@ -91,7 +91,7 @@ public class ReconnectCommand extends SubCommand {
      * @param all             是否强制重连全部客户端
      */
     public void reconnect(Object commandReturner, boolean all) {
-        returnMessageService.sendReturnMessage(
+        platformContext.returnCallBackMessage(
                 commandReturner, all ? CommandConstant.RECONNECT_ALL_CLIENT : CommandConstant.RECONNECT_NOT_OPEN_CLIENT);
 
         List<WsClient> wsClientList = websocketManager.getWsClientList();
@@ -103,13 +103,13 @@ public class ReconnectCommand extends SubCommand {
                 continue;
             }
             wsClient.reconnectNow();
-            returnMessageService.sendReturnMessage(
+            platformContext.returnCallBackMessage(
                     commandReturner, Tool.format(CommandConstant.RECONNECT_MESSAGE, wsClient.getURI()));
         }
 
         if (alreadyOpenCount == wsClientList.size()) {
-            returnMessageService.sendReturnMessage(commandReturner, CommandConstant.RECONNECT_NO_CLIENT_NEED_RECONNECT);
+            platformContext.returnCallBackMessage(commandReturner, CommandConstant.RECONNECT_NO_CLIENT_NEED_RECONNECT);
         }
-        returnMessageService.sendReturnMessage(commandReturner, CommandConstant.RECONNECTED);
+        platformContext.returnCallBackMessage(commandReturner, CommandConstant.RECONNECTED);
     }
 }

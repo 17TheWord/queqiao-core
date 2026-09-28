@@ -6,7 +6,7 @@ import io.github.theword.queqiao.core.command.subCommand.ReloadCommand;
 import io.github.theword.queqiao.core.command.subCommand.ServerCommand;
 import io.github.theword.queqiao.core.config.Config;
 import io.github.theword.queqiao.core.constant.BaseConstant;
-import io.github.theword.queqiao.core.handle.HandleCommandReturnMessageService;
+import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
 import org.slf4j.Logger;
 
@@ -30,23 +30,23 @@ public class RootCommand extends SubCommand {
     /**
      * 构造根命令
      *
-     * @param returnMessageService 命令返回消息实现，不得为 null
+     * @param platformContext 命令返回消息实现，不得为 null
      * @param logger               日志实现，不得为 null
      * @param config               配置运行时状态，不得为 null
      * @param websocketManager     WebSocket 管理器（须在 Runtime.start() 之后获取），不得为 null
      * @param reloadAction         触发 Runtime 重载的动作，入参为命令执行者，不得为 null
      */
     public RootCommand(
-            HandleCommandReturnMessageService returnMessageService,
+            AbstractPlatformContext<?, ?, ?, ?> platformContext,
             Logger logger,
             Config config,
             WebsocketManager websocketManager,
             Consumer<Object> reloadAction) {
-        super(returnMessageService, logger);
-        addChild(new HelpCommand(returnMessageService, logger));
-        addChild(new ReloadCommand(returnMessageService, logger, reloadAction));
-        addChild(new ServerCommand(returnMessageService, logger, config, websocketManager));
-        addChild(new ClientCommand(returnMessageService, logger, config, websocketManager));
+        super(platformContext, logger);
+        addChild(new HelpCommand(platformContext, logger));
+        addChild(new ReloadCommand(platformContext, logger, reloadAction));
+        addChild(new ServerCommand(platformContext, logger, config, websocketManager));
+        addChild(new ClientCommand(platformContext, logger, config, websocketManager));
     }
 
     /**
@@ -77,7 +77,7 @@ public class RootCommand extends SubCommand {
      */
     @Override
     protected void onExecute(Object commandReturner, List<String> args) {
-        returnMessageService.sendReturnMessage(
+        platformContext.returnCallBackMessage(
                 commandReturner, "请使用帮助命令查看可用子命令：" + BaseConstant.COMMAND_HEADER + " help"
         );
     }

@@ -5,11 +5,9 @@ import io.github.theword.queqiao.core.command.subCommand.client.ReconnectCommand
 import io.github.theword.queqiao.core.command.subCommand.server.InfoCommand;
 import io.github.theword.queqiao.core.constant.CommandConstant;
 import io.github.theword.queqiao.core.config.io.ConfigStore;
-import io.github.theword.queqiao.core.handle.HandleApiService;
-import io.github.theword.queqiao.core.handle.HandleCommandReturnMessageService;
-import io.github.theword.queqiao.core.response.PrivateMessageResponse;
+import io.github.theword.queqiao.core.platform.TestCommandSource;
 import io.github.theword.queqiao.core.runtime.QueQiaoRuntime;
-import com.google.gson.JsonElement;
+import io.github.theword.queqiao.core.support.PlatformStubs;
 import org.java_websocket.client.WebSocketClient;
 import org.java_websocket.handshake.ServerHandshake;
 import org.junit.jupiter.api.AfterEach;
@@ -38,15 +36,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * 命令层测试（WS-E：E5 / E6 / E7）
  *
- * <p>覆盖三条直接读取 Manager 状态的命令：{@code server info}、{@code client list}、
+ * <p>
+ * 覆盖三条直接读取 Manager 状态的命令：{@code server info}、{@code client list}、
  * {@code client reconnect}。
  *
- * <p><b>测试方式</b>：写一份配置夹具到 {@code plugins/queqiao/config.yml}（结束时还原原文件），
+ * <p>
+ * <b>测试方式</b>：写一份配置夹具到 {@code plugins/queqiao/config.yml}（结束时还原原文件），
  * 其中服务端端口使用测试时选定的空闲端口、客户端 URL 指向一个无人监听的端口，
  * 然后创建并启动 {@code QueQiaoRuntime} —— 即可得到"活的" Manager 与真实监听的服务端。
  * 命令对象所需的依赖（命令返回服务、Logger、Config、Manager）全部从该 Runtime 显式取得。
  *
- * <p><b>已知代价</b>：本类会写工作目录下的配置文件并绑定端口（属评审记录的测试隔离欠债）；
+ * <p>
+ * <b>已知代价</b>：本类会写工作目录下的配置文件并绑定端口（属评审记录的测试隔离欠债）；
  * 端口用"绑定 0 号端口取空闲端口再释放"获取，存在极小竞态窗口。
  */
 @Isolated
@@ -60,26 +61,11 @@ class CommandLayerTest {
 
     private static final String SERVER_NAME = "TestServer";
 
-    private static final HandleApiService NOOP_API_SERVICE = new HandleApiService() {
-        @Override
-        public void handleBroadcastMessage(JsonElement jsonData) {
-        }
-
-        @Override
-        public void handleSendTitleMessage(JsonElement titlePayload, JsonElement subTitlePayload, int fadeIn, int stay, int fadeOut) {
-        }
-
-        @Override
-        public void handleSendActionBarMessage(JsonElement jsonData) {
-        }
-
-        @Override
-        public PrivateMessageResponse handleSendPrivateMessage(String nickname, UUID uuid, JsonElement jsonData) {
-            return null;
-        }
-    };
-
-    private final RecordingReturnMessageService RETURN_MESSAGES = new RecordingReturnMessageService();
+    /**
+     * 记录型平台上下文：命令回执经 {@code returnCallBackMessage} 落到这里
+     */
+    private final PlatformStubs.RecordingPlatformContext PLATFORM =
+            PlatformStubs.recordingPlatformContext();
 
     /**
      * 当前用例的 Runtime（由 {@link #startRuntime()} 创建并启动）
@@ -90,7 +76,7 @@ class CommandLayerTest {
      * 创建并启动 Runtime；命令树所需的 Manager 只有在 start() 之后才存在
      */
     private void startRuntime() {
-        runtime = QueQiaoRuntime.create(false, "1.20.1", "test", NOOP_API_SERVICE, RETURN_MESSAGES);
+        runtime = QueQiaoRuntime.create(null, PLATFORM, null);
         runtime.start();
     }
 
@@ -128,10 +114,10 @@ class CommandLayerTest {
                         10_000L,
                         "服务端应登记 2 个连接");
 
-                RETURN_MESSAGES.clear();
-                new InfoCommand(RETURN_MESSAGES, LOGGER, runtime.getConfig(), runtime.getWebsocketManager())
-                        .execute("sender", Collections.emptyList());
-                List<String> messages = RETURN_MESSAGES.snapshot();
+                PLATFORM.clearRecordings();
+                new InfoCommand(PLATFORM, LOGGER, runtime.getConfig(), runtime.getWebsocketManager())
+                        .execute(new TestCommandSource(), Collections.emptyList());
+                List<String> messages = PLATFORM.getReturnMessages();
 
                 assertTrue(containsAny(messages, "已有 2 个连接"), "应报告 2 个连接，实际=" + messages);
                 assertTrue(containsAny(messages, "1 来自"), "应有第 1 条连接明细，实际=" + messages);
@@ -157,10 +143,10 @@ class CommandLayerTest {
         try (ConfigFixture ignored = new ConfigFixture(serverPort, deadPort)) {
             startRuntime();
 
-            RETURN_MESSAGES.clear();
-            new ListCommand(RETURN_MESSAGES, LOGGER, runtime.getConfig(), runtime.getWebsocketManager())
-                    .execute("sender", Collections.emptyList());
-            List<String> messages = RETURN_MESSAGES.snapshot();
+            PLATFORM.clearRecordings();
+            new ListCommand(PLATFORM, LOGGER, runtime.getConfig(), runtime.getWebsocketManager())
+                    .execute(new TestCommandSource(), Collections.emptyList());
+            List<String> messages = PLATFORM.getReturnMessages();
 
             assertTrue(containsAny(messages, "共 2 个 Client"), "应报告 2 个 Client，实际=" + messages);
             assertTrue(containsAny(messages, "1 连接至"), "编号应从 1 开始，实际=" + messages);
@@ -184,10 +170,10 @@ class CommandLayerTest {
         try (ConfigFixture ignored = new ConfigFixture(serverPort, deadPort)) {
             startRuntime();
 
-            RETURN_MESSAGES.clear();
-            new ReconnectCommand(RETURN_MESSAGES, LOGGER, runtime.getWebsocketManager())
-                    .reconnect("sender", false);
-            List<String> messages = RETURN_MESSAGES.snapshot();
+            PLATFORM.clearRecordings();
+            new ReconnectCommand(PLATFORM, LOGGER, runtime.getWebsocketManager())
+                    .reconnect(new TestCommandSource(), false);
+            List<String> messages = PLATFORM.getReturnMessages();
 
             assertTrue(
                     containsAny(messages, CommandConstant.RECONNECTED),
@@ -210,7 +196,8 @@ class CommandLayerTest {
         return messages.stream().anyMatch(message -> message.contains(fragment));
     }
 
-    private static void awaitCondition(BooleanSupplier condition, long timeoutMillis, String description) throws InterruptedException {
+    private static void awaitCondition(BooleanSupplier condition, long timeoutMillis, String description)
+            throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
         while (System.nanoTime() < deadline) {
             if (condition.getAsBoolean()) {
@@ -225,34 +212,6 @@ class CommandLayerTest {
         try (ServerSocket socket = new ServerSocket(0)) {
             socket.setReuseAddress(true);
             return socket.getLocalPort();
-        }
-    }
-
-    /**
-     * 记录所有下发给命令执行者的消息
-     */
-    private static final class RecordingReturnMessageService extends HandleCommandReturnMessageService {
-
-        private final List<String> messages = Collections.synchronizedList(new ArrayList<>());
-
-        @Override
-        public void handleCommandReturnMessage(Object commandReturner, String message) {
-            messages.add(message);
-        }
-
-        @Override
-        public boolean hasPermission(Object commandReturner, String permissionNode) {
-            return true;
-        }
-
-        private void clear() {
-            messages.clear();
-        }
-
-        private List<String> snapshot() {
-            synchronized (messages) {
-                return new ArrayList<>(messages);
-            }
         }
     }
 

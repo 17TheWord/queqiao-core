@@ -1,7 +1,7 @@
 package io.github.theword.queqiao.core.command;
 
 import io.github.theword.queqiao.core.constant.CommandConstant;
-import io.github.theword.queqiao.core.handle.HandleCommandReturnMessageService;
+import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
 import io.github.theword.queqiao.core.utils.Tool;
 import org.slf4j.Logger;
 
@@ -37,7 +37,7 @@ public abstract class SubCommand {
     /**
      * 命令返回消息实现
      */
-    protected final HandleCommandReturnMessageService returnMessageService;
+    protected final AbstractPlatformContext<?, ?, ?, ?> platformContext;
 
     /**
      * 日志实现
@@ -47,11 +47,11 @@ public abstract class SubCommand {
     /**
      * 构造子命令
      *
-     * @param returnMessageService 命令返回消息实现，不得为 null
+     * @param platformContext 命令返回消息实现，不得为 null
      * @param logger               日志实现，不得为 null
      */
-    protected SubCommand(HandleCommandReturnMessageService returnMessageService, Logger logger) {
-        this.returnMessageService = Objects.requireNonNull(returnMessageService, "returnMessageService");
+    protected SubCommand(AbstractPlatformContext<?, ?, ?, ?> platformContext, Logger logger) {
+        this.platformContext = Objects.requireNonNull(platformContext, "platformContext");
         this.logger = Objects.requireNonNull(logger, "logger");
     }
 
@@ -176,16 +176,16 @@ public abstract class SubCommand {
      */
     public int execute(Object commandReturner, List<String> args) {
         try {
-            if (!returnMessageService.hasPermission(commandReturner, getPermissionNode())) {
-                returnMessageService.sendReturnMessage(commandReturner, "您没有权限执行此命令。");
+            if (!platformContext.checkPermission(commandReturner, getPermissionNode())) {
+                platformContext.returnCallBackMessage(commandReturner, "您没有权限执行此命令。");
                 return CommandConstant.FAIL_SIGNAL;
             }
-            returnMessageService.sendReturnMessage(commandReturner, "============ 鹊桥 ===========");
+            platformContext.returnCallBackMessage(commandReturner, "============ 鹊桥 ===========");
             onExecute(commandReturner, args);
-            returnMessageService.sendReturnMessage(commandReturner, "============================");
+            platformContext.returnCallBackMessage(commandReturner, "============================");
             return CommandConstant.SUCCESS_SIGNAL;
         } catch (Exception e) {
-            returnMessageService.sendReturnMessage(commandReturner, "命令执行出错: " + e.getMessage());
+            platformContext.returnCallBackMessage(commandReturner, "命令执行出错: " + e.getMessage());
             logger.error("命令执行出错", e);
             return CommandConstant.FAIL_SIGNAL;
         }
@@ -208,7 +208,7 @@ public abstract class SubCommand {
      */
     public void sendCommandTree(Object commandReturner, SubCommand command) {
         String msg = Tool.format("{} - {}", command.getUsage(), command.getDescription());
-        returnMessageService.sendReturnMessage(commandReturner, msg);
+        platformContext.returnCallBackMessage(commandReturner, msg);
 
         for (SubCommand child : command.getChildren()) {
             sendCommandTree(commandReturner, child);

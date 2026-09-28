@@ -4,21 +4,21 @@ import io.github.theword.queqiao.core.command.SubCommand;
 import io.github.theword.queqiao.core.command.subCommand.client.ListCommand;
 import io.github.theword.queqiao.core.command.subCommand.client.ReconnectCommand;
 import io.github.theword.queqiao.core.config.Config;
-import io.github.theword.queqiao.core.handle.HandleCommandReturnMessageService;
+import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
 import org.slf4j.Logger;
 
 public class ClientCommand extends SubCommand {
 
     public ClientCommand(
-            HandleCommandReturnMessageService returnMessageService,
+            AbstractPlatformContext<?, ?, ?, ?> platformContext,
             Logger logger,
             Config config,
             WebsocketManager websocketManager) {
-        super(returnMessageService, logger);
+        super(platformContext, logger);
         // 注册子命令
-        addChild(new ListCommand(returnMessageService, logger, config, websocketManager));
-        addChild(new ReconnectCommand(returnMessageService, logger, websocketManager));
+        addChild(new ListCommand(platformContext, logger, config, websocketManager));
+        addChild(new ReconnectCommand(platformContext, logger, websocketManager));
     }
 
     /**

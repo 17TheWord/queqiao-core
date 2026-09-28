@@ -3,7 +3,7 @@ package io.github.theword.queqiao.core.command.subCommand.client;
 import io.github.theword.queqiao.core.command.SubCommand;
 import io.github.theword.queqiao.core.config.ConfigKeys;
 import io.github.theword.queqiao.core.config.Config;
-import io.github.theword.queqiao.core.handle.HandleCommandReturnMessageService;
+import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
 import io.github.theword.queqiao.core.utils.Tool;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
 import io.github.theword.queqiao.core.websocket.WsClient;
@@ -26,11 +26,11 @@ public class ListCommand extends SubCommand {
     private final WebsocketManager websocketManager;
 
     public ListCommand(
-            HandleCommandReturnMessageService returnMessageService,
+            AbstractPlatformContext<?, ?, ?, ?> platformContext,
             Logger logger,
             Config config,
             WebsocketManager websocketManager) {
-        super(returnMessageService, logger);
+        super(platformContext, logger);
         this.config = Objects.requireNonNull(config, "config");
         this.websocketManager = Objects.requireNonNull(
                 websocketManager, "websocketManager 不能为 null：命令树须在 Runtime.start() 之后构建");
@@ -76,12 +76,12 @@ public class ListCommand extends SubCommand {
     protected void onExecute(Object commandReturner, List<String> args) {
         if (!config.get(ConfigKeys.WebSocketClient.ENABLE)) {
             List<String> urlList = new ArrayList<>(config.get(ConfigKeys.WebSocketClient.URL_LIST));
-            returnMessageService.sendReturnMessage(
+            platformContext.returnCallBackMessage(
                     commandReturner, "Websocket Client 配置项未启用，如需开启，请在 config.yml 中启用 WebsocketClient 配置项");
-            returnMessageService.sendReturnMessage(
+            platformContext.returnCallBackMessage(
                     commandReturner, Tool.format("配置文件中连接列表如下共 {} 个 Client", urlList.size()));
             for (int i = 0; i < urlList.size(); i++) {
-                returnMessageService.sendReturnMessage(
+                platformContext.returnCallBackMessage(
                         commandReturner, Tool.format("{} 连接至 {}", i + 1, urlList.get(i)));
             }
             return;
@@ -89,12 +89,12 @@ public class ListCommand extends SubCommand {
 
         List<WsClient> wsClientList = websocketManager.getWsClientList();
 
-        returnMessageService.sendReturnMessage(
+        platformContext.returnCallBackMessage(
                 commandReturner, Tool.format("Websocket Client 列表，共 {} 个 Client", wsClientList.size()));
 
         for (int i = 0; i < wsClientList.size(); i++) {
             WsClient wsClient = wsClientList.get(i);
-            returnMessageService.sendReturnMessage(
+            platformContext.returnCallBackMessage(
                     commandReturner,
                     Tool.format(
                             "{} 连接至 {} 的 Client，状态：{}",

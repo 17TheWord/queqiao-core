@@ -1,21 +1,15 @@
 package io.github.theword.queqiao.core.protocol;
 
+import io.github.theword.queqiao.core.api.Api;
 import io.github.theword.queqiao.core.constant.BaseConstant;
 import io.github.theword.queqiao.core.constant.ProtocolConstants;
 import io.github.theword.queqiao.core.exception.protocol.ProtocolException;
-import io.github.theword.queqiao.core.handle.HandleApiService;
 import io.github.theword.queqiao.core.payload.BasePayload;
-import io.github.theword.queqiao.core.protocol.handler.BroadcastHandler;
-import io.github.theword.queqiao.core.protocol.handler.GetStatusHandler;
-import io.github.theword.queqiao.core.protocol.handler.SendActionBarHandler;
-import io.github.theword.queqiao.core.protocol.handler.SendCommandHandler;
-import io.github.theword.queqiao.core.protocol.handler.SendPrivateMessageHandler;
-import io.github.theword.queqiao.core.protocol.handler.SendRconCommandHandler;
-import io.github.theword.queqiao.core.protocol.handler.SendTitleHandler;
-import io.github.theword.queqiao.core.protocol.handler.status.ServerStatusCollector;
 import io.github.theword.queqiao.core.response.Response;
 import org.slf4j.Logger;
 
+import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -23,14 +17,18 @@ import java.util.Objects;
 /**
  * 协议路由器
  *
- * <p>把 {@code api} 字段映射到对应的 {@link AbstractProtocolHandler}。
+ * <p>把请求的 {@code api} 字段映射到对应的 {@link Api} 并分发。
  *
- * <p><b>线程安全</b>：处理器表只在构造阶段写入（{@code register} 为 private 且仅构造器调用），
- * 之后只读，因此本类构造后即不可变、可被多连接并发使用，且<b>不含任何锁</b>。
+ * <p><b>注册由外部决定</b>：本类不再自己构造 Api，而是接收一个 Api 集合。
+ * 因此"注册哪些 api"是装配方的自由选择（core 提供 {@code DefaultApis} 作为默认批次），
+ * 本类只负责查表与分发。
  *
- * <p><b>不依赖全局状态</b>：日志实现、平台 API 实现、RCON 执行器与状态采集器均由构造器注入，
- * 不再访问任何静态全局状态——使协议层可脱离全局上下文独立测试
- * （包括此前无法验证的"成功路径"）。
+ * <p><b>线程安全</b>：api 表在构造阶段一次性建好，之后<b>不可变</b>
+ * （{@link Collections#unmodifiableMap}），因此本类可被多连接并发使用，且<b>不含任何锁</b>。
+ * 把集合作为构造入参而不是提供 {@code register} 方法，正是为了让这一不变量
+ * 由类型系统保证，而不是靠调用方自觉。
+ *
+ * <p><b>不依赖全局状态</b>：日志实现与 Api 集合均由构造器注入。
  *
  * @since 0.6.11
  */
@@ -39,40 +37,47 @@ public class ProtocolRouter {
     private final Logger logger;
 
     /**
-     * 平台 API 实现，允许为 null（运行时空对象状态）
+     * api 名 → Api 实例（含别名），构造后只读
      */
-    private final HandleApiService handleApiService;
-
-    private final RconCommandExecutor rconCommandExecutor;
-
-    private final Map<String, AbstractProtocolHandler<?, ?>> handlers = new HashMap<>();
+    private final Map<String, Api<?, ?>> apis;
 
     /**
      * 构造路由器
      *
-     * @param logger               日志实现，不得为 null
-     * @param handleApiService     平台 API 实现，允许为 null（未初始化状态）
-     * @param rconCommandExecutor  RCON 命令执行器，不得为 null
-     * @param serverStatusCollector 状态采集器（Runtime 实例级），不得为 null
+     * @param logger 日志实现，不得为 null
+     * @param apis   Api 集合，不得为 null；名字为空或重复时抛 {@link IllegalArgumentException}
      */
-    public ProtocolRouter(
-            Logger logger,
-            HandleApiService handleApiService,
-            RconCommandExecutor rconCommandExecutor,
-            ServerStatusCollector serverStatusCollector) {
+    public ProtocolRouter(Logger logger, Collection<Api<?, ?>> apis) {
         this.logger = Objects.requireNonNull(logger, "logger");
-        this.handleApiService = handleApiService;
-        this.rconCommandExecutor = Objects.requireNonNull(rconCommandExecutor, "rconCommandExecutor");
+        this.apis = buildApiMap(apis);
+    }
 
-        BroadcastHandler broadcastHandler = new BroadcastHandler(logger, handleApiService);
-        register(ProtocolConstants.Api.BROADCAST, broadcastHandler);
-        register(ProtocolConstants.Api.SEND_MSG, broadcastHandler);
-        register(ProtocolConstants.Api.SEND_TITLE, new SendTitleHandler(logger, handleApiService));
-        register(ProtocolConstants.Api.SEND_ACTIONBAR, new SendActionBarHandler(logger, handleApiService));
-        register(ProtocolConstants.Api.SEND_PRIVATE_MSG, new SendPrivateMessageHandler(logger, handleApiService));
-        register(ProtocolConstants.Api.SEND_COMMAND, new SendCommandHandler(logger, handleApiService));
-        register(ProtocolConstants.Api.SEND_RCON_COMMAND, new SendRconCommandHandler(logger, handleApiService, rconCommandExecutor));
-        register(ProtocolConstants.Api.GET_STATUS, new GetStatusHandler(logger, handleApiService, serverStatusCollector));
+    /**
+     * 建立 api 名 → 实例的只读映射
+     *
+     * <p>名字重复时<b>快速失败</b>，而不是静默覆盖——后者会让"注册了两个同名的 api"
+     * 这种装配错误一直潜伏到运行期才以"行为不符合预期"的形式暴露。
+     */
+    private static Map<String, Api<?, ?>> buildApiMap(Collection<Api<?, ?>> apis) {
+        Objects.requireNonNull(apis, "apis");
+        Map<String, Api<?, ?>> mutable = new HashMap<>();
+        for (Api<?, ?> api : apis) {
+            putUnique(mutable, api.name(), api);
+            for (String alias : api.aliases()) {
+                putUnique(mutable, alias, api);
+            }
+        }
+        return Collections.unmodifiableMap(mutable);
+    }
+
+    private static void putUnique(Map<String, Api<?, ?>> target, String name, Api<?, ?> api) {
+        if (name == null || name.trim().isEmpty()) {
+            throw new IllegalArgumentException("api 名称不能为空：" + api.getClass().getName());
+        }
+        if (target.containsKey(name)) {
+            throw new IllegalArgumentException("重复注册的 api 名称：" + name);
+        }
+        target.put(name, api);
     }
 
     /**
@@ -82,7 +87,7 @@ public class ProtocolRouter {
      * <ul>
      *     <li>{@code 400} —— 请求本身不合法（payload 为 null、缺少 api 字段、负载解析失败）</li>
      *     <li>{@code 404} —— api 未注册</li>
-     *     <li>处理器抛出的 {@link ProtocolException} —— 使用其自带状态码（如 400 / 500 / 503）</li>
+     *     <li>Api 抛出的 {@link ProtocolException} —— 使用其自带状态码（如 400 / 500 / 503）</li>
      *     <li>{@code 500} —— 真正的服务端未预期异常</li>
      * </ul>
      *
@@ -101,14 +106,14 @@ public class ProtocolRouter {
             return Response.failed(ProtocolConstants.Status.BAD_REQUEST, ProtocolConstants.Message.MISSING_API);
         }
 
-        AbstractProtocolHandler<?, ?> handler = handlers.get(api);
-        if (handler == null) {
+        Api<?, ?> apiImpl = apis.get(api);
+        if (apiImpl == null) {
             this.logger.warn(BaseConstant.UNKNOWN_API + "{}", api);
             return Response.failed(ProtocolConstants.Status.NOT_FOUND, BaseConstant.UNKNOWN_API + api);
         }
 
         try {
-            Object data = handler.handle(payload.getData());
+            Object data = apiImpl.execute(payload.getData());
             return Response.success(data);
         } catch (ProtocolException e) {
             return Response.failed(e.getCode(), e.getMessage(), e.getData());
@@ -118,9 +123,5 @@ public class ProtocolRouter {
             String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
             return Response.failed(ProtocolConstants.Status.INTERNAL_ERROR, message);
         }
-    }
-
-    private void register(String api, AbstractProtocolHandler<?, ?> handler) {
-        handlers.put(api, handler);
     }
 }

@@ -2,7 +2,7 @@ package io.github.theword.queqiao.core.command;
 
 
 import io.github.theword.queqiao.core.config.Config;
-import io.github.theword.queqiao.core.handle.HandleCommandReturnMessageService;
+import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
 import org.slf4j.Logger;
 
@@ -26,25 +26,25 @@ public class CommandExecutorHelper {
     /**
      * 供 tab 补全做权限过滤使用
      */
-    private final HandleCommandReturnMessageService returnMessageService;
+    private final AbstractPlatformContext<?, ?, ?, ?> platformContext;
 
     /**
      * 构造命令执行助手
      *
-     * @param returnMessageService 命令返回消息实现，不得为 null
+     * @param platformContext 命令返回消息实现，不得为 null
      * @param logger               日志实现，不得为 null
      * @param config               配置运行时状态，不得为 null
      * @param websocketManager     WebSocket 管理器（须在 Runtime.start() 之后获取），不得为 null
      * @param reloadAction         触发 Runtime 重载的动作，不得为 null
      */
     public CommandExecutorHelper(
-            HandleCommandReturnMessageService returnMessageService,
+            AbstractPlatformContext<?, ?, ?, ?> platformContext,
             Logger logger,
             Config config,
             WebsocketManager websocketManager,
             Consumer<Object> reloadAction) {
-        this.returnMessageService = Objects.requireNonNull(returnMessageService, "returnMessageService");
-        this.rootCommand = new RootCommand(returnMessageService, logger, config, websocketManager, reloadAction);
+        this.platformContext = Objects.requireNonNull(platformContext, "platformContext");
+        this.rootCommand = new RootCommand(platformContext, logger, config, websocketManager, reloadAction);
     }
 
     public RootCommand getRootCommand() {
@@ -131,6 +131,6 @@ public class CommandExecutorHelper {
         String lastArg = args[args.length - 1].toLowerCase();
 
         // 返回匹配前缀的子命令名称，并过滤无权限的命令
-        return current.getChildren().stream().filter(child -> returnMessageService.hasPermission(sender, child.getPermissionNode())).map(SubCommand::getName).filter(name -> name.toLowerCase().startsWith(lastArg)).collect(Collectors.toList());
+        return current.getChildren().stream().filter(child -> platformContext.checkPermission(sender, child.getPermissionNode())).map(SubCommand::getName).filter(name -> name.toLowerCase().startsWith(lastArg)).collect(Collectors.toList());
     }
 }
