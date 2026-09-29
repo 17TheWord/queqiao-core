@@ -11,8 +11,9 @@ import org.slf4j.Logger;
  *
  * <p>协议名：{@code send_actionbar}。
  *
- * <p>平台未实现 ActionBar 时，{@code AbstractPlatformContext#sendActionBarComponent}
- * 会抛出 503。
+ * <p>平台未实现时 {@code AbstractPlatformContext#sendActionBarComponent} 返回
+ * {@code PlatformResultCode.UNSUPPORTED}，由 {@link Api#mapPlatformResult} 统一映射为 503
+ * ——与迁移前直接抛出 503 的行为一致。
  */
 public final class SendActionBarApi extends PlatformApi<MessagePayload, Void> {
 
@@ -27,7 +28,7 @@ public final class SendActionBarApi extends PlatformApi<MessagePayload, Void> {
 
     @Override
     protected Void doExecute(MessagePayload payload) throws ProtocolException {
-        platform.sendActionBar(payload.getMessage());
+        requireSuccess(platform.sendActionBar(payload.getMessage()));
         return null;
     }
 }

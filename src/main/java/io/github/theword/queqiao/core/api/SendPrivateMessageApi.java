@@ -1,9 +1,12 @@
 package io.github.theword.queqiao.core.api;
 
 import io.github.theword.queqiao.core.constant.ProtocolConstants;
+import io.github.theword.queqiao.core.event.model.PlayerModel;
 import io.github.theword.queqiao.core.exception.protocol.ProtocolException;
 import io.github.theword.queqiao.core.payload.PrivateMessagePayload;
 import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
+import io.github.theword.queqiao.core.platform.PlatformResult;
+import io.github.theword.queqiao.core.platform.PlatformResultCode;
 import io.github.theword.queqiao.core.response.PrivateMessageResponse;
 import org.slf4j.Logger;
 
@@ -16,7 +19,13 @@ import org.slf4j.Logger;
  * {@code nickname} 使用 {@code trim()} 后判空，因此纯空白字符串（如 {@code "   "}）视为未提供。
  *
  * <p>两者同时提供时的优先级由 {@code AbstractPlatformContext#findPlayer} 决定。
- * 真正的"查找玩家 + 发送 + 构造响应"由平台上下文内部完成——只有平台侧认识玩家类型。
+ * 真正的"查找玩家 + 发送"由平台上下文内部完成——只有平台侧认识玩家类型；
+ * 本 Api 只把平台返回的 {@link PlayerModel} 快照组装成协议响应。
+ *
+ * <p><b>为什么覆盖了 {@code PLAYER_NOT_FOUND} 的处理路径</b>：
+ * 迁移前"目标玩家不存在"返回的是 <b>200 + {@code playerNotFound} 负载</b>，
+ * 客户端据此字段判断结果。它不是协议错误，因此本 Api 在调用
+ * {@link #requireSuccess} 之前先拦截该结果码，保持既有协议语义不变。
  */
 public final class SendPrivateMessageApi extends PlatformApi<PrivateMessagePayload, PrivateMessageResponse> {
 
@@ -40,7 +49,18 @@ public final class SendPrivateMessageApi extends PlatformApi<PrivateMessagePaylo
             throw ProtocolException.badRequest(response.getMessage(), response);
         }
 
-        return platform.sendPrivateMessage(
-                normalizedNickname, payload.getUuid(), payload.getMessage());
+        PlatformResult<PlayerModel> result =
+                platform.sendPrivateMessage(normalizedNickname, payload.getUuid(), payload.getMessage());
+
+        if (result.getCode() == PlatformResultCode.PLAYER_NOT_FOUND) {
+            // 保持迁移前的协议语义：目标玩家不存在不是协议错误，
+            // 而是 200 + playerNotFound 负载（客户端依赖该负载判断结果，不能改成 400）。
+            return PrivateMessageResponse.playerNotFound();
+        }
+
+        PlayerModel target = requireSuccess(result);
+        logger.info("向玩家 {} 发送了一条私聊消息", normalizedNickname);
+
+        return PrivateMessageResponse.sendSuccess(target);
     }
 }

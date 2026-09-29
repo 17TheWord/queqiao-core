@@ -47,13 +47,16 @@ public class PlatformContext extends AbstractPlatformContext<TestServer, TestCom
     }
 
     @Override
-    public void broadcast(TestComponent component) {
+    public PlatformResult<String> broadcast(TestComponent component) {
         server.broadcast(component);
+        // 只有平台认识自己的组件类型，因此渲染文本由平台提供
+        return PlatformResult.success(component.getJson());
     }
 
     @Override
-    public void sendMessage(TestPlayer player, TestComponent component) {
+    public PlatformResult<Void> sendPrivateMessage(TestPlayer player, TestComponent component) {
         player.sendMessage(component);
+        return PlatformResult.success(null);
     }
 
     @Override

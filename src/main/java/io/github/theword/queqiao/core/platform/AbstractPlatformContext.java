@@ -9,14 +9,20 @@ import com.google.gson.JsonObject;
 import io.github.theword.queqiao.core.constant.ProtocolConstants;
 import io.github.theword.queqiao.core.constant.ServerTypeConstant;
 import io.github.theword.queqiao.core.event.model.PlayerModel;
-import io.github.theword.queqiao.core.exception.protocol.ProtocolException;
-import io.github.theword.queqiao.core.response.PrivateMessageResponse;
 
 /**
  * 平台上下文：core 与具体服务端之间的<b>唯一</b>接入点
  *
  * <p>平台侧继承本类并实现其中的抽象原语；core 侧只通过本类的公开方法访问平台能力，
  * 因此 core 不依赖任何具体服务端的类型。
+ *
+ * <p><b>结果表达（重要）</b>：平台操作统一返回 {@link PlatformResult}，
+ * 用 {@link PlatformResultCode} 表达"平台侧发生了什么"。
+ * 本类<b>不</b>依赖 {@code ProtocolException}、{@code Response}、
+ * {@code PrivateMessageResponse} 或任何协议类型——
+ * 把 {@link PlatformResult} 翻译成协议状态是 {@code Api} 层的职责。
+ * 因此其它模块（命令层、未来的非协议调用方）也可以直接调用本类并消费结果，
+ * 不需要经过 Api / WebSocket。
  *
  * <p><b>公开方法签名约定（重要）</b>：本类的公开方法签名中<b>不出现</b>
  * {@code S / C / P / CS} 这四个类型参数。这样 core 侧持有
@@ -34,6 +40,14 @@ import io.github.theword.queqiao.core.response.PrivateMessageResponse;
  * @param <CS> 命令源类型
  */
 public abstract class AbstractPlatformContext<S, C, P, CS> {
+
+    /**
+     * 目标玩家不存在的说明
+     *
+     * <p>与历史上 {@code PrivateMessageResponse.playerNotFound()} 的文案保持一致，
+     * 便于非协议调用方直接展示。
+     */
+    private static final String MESSAGE_PLAYER_NOT_FOUND = "Target player not found.";
 
     /**
      * 服务端实例
@@ -111,17 +125,23 @@ public abstract class AbstractPlatformContext<S, C, P, CS> {
     /**
      * 广播组件给所有玩家
      *
+     * <p>成功时返回"适合 Core 上层使用"的消息文本（由平台把 {@code C} 渲染成文本，
+     * 因为只有平台认识自己的组件类型）。该文本用于日志与其它非协议调用方；
+     * {@code C} 本身<b>不会</b>离开平台层。
+     *
      * @param component 平台组件
+     * @return 成功时 data 为渲染后的文本；失败时返回相应的失败结果
      */
-    public abstract void broadcast(C component);
+    public abstract PlatformResult<String> broadcast(C component);
 
     /**
      * 发送组件给指定玩家
      *
      * @param player    玩家
      * @param component 平台组件
+     * @return 成功 / 失败结果
      */
-    public abstract void sendMessage(P player, C component);
+    public abstract PlatformResult<Void> sendPrivateMessage(P player, C component);
 
     /**
      * 判断命令源是否具有指定权限
@@ -151,30 +171,33 @@ public abstract class AbstractPlatformContext<S, C, P, CS> {
     /**
      * 向所有玩家发送标题（可选能力）
      *
-     * <p>默认实现抛出 503，表示当前平台不支持标题。支持标题的平台覆盖本方法即可。
+     * <p>默认返回 {@link PlatformResultCode#UNSUPPORTED}，表示当前平台不支持标题。
+     * 支持标题的平台覆盖本方法即可。
      *
      * @param title    主标题组件，可为 null
      * @param subtitle 副标题组件，可为 null
      * @param fadeIn   淡入时间（ticks）
      * @param stay     停留时间（ticks）
      * @param fadeOut  淡出时间（ticks）
-     * @throws ProtocolException 平台不支持时抛出 503
+     * @return 成功 / 失败结果
      */
-    public void sendTitleComponent(C title, C subtitle, int fadeIn, int stay, int fadeOut)
-            throws ProtocolException {
-        throw ProtocolException.serviceUnavailable(ProtocolConstants.Message.TITLE_UNSUPPORTED, null);
+    public PlatformResult<Void> sendTitleComponent(C title, C subtitle, int fadeIn, int stay, int fadeOut) {
+        return PlatformResult.failure(
+                PlatformResultCode.UNSUPPORTED, ProtocolConstants.Message.TITLE_UNSUPPORTED);
     }
 
     /**
      * 向所有玩家发送 ActionBar（可选能力）
      *
-     * <p>默认实现抛出 503，表示当前平台不支持 ActionBar。支持的平台覆盖本方法即可。
+     * <p>默认返回 {@link PlatformResultCode#UNSUPPORTED}，表示当前平台不支持 ActionBar。
+     * 支持的平台覆盖本方法即可。
      *
      * @param component 平台组件
-     * @throws ProtocolException 平台不支持时抛出 503
+     * @return 成功 / 失败结果
      */
-    public void sendActionBarComponent(C component) throws ProtocolException {
-        throw ProtocolException.serviceUnavailable(ProtocolConstants.Message.ACTIONBAR_UNSUPPORTED, null);
+    public PlatformResult<Void> sendActionBarComponent(C component) {
+        return PlatformResult.failure(
+                PlatformResultCode.UNSUPPORTED, ProtocolConstants.Message.ACTIONBAR_UNSUPPORTED);
     }
 
     // ------------------------------------------------------------------
@@ -185,10 +208,10 @@ public abstract class AbstractPlatformContext<S, C, P, CS> {
      * 广播 JSON 组件给所有玩家
      *
      * @param json JSON 组件
+     * @return 成功时 data 为渲染后的文本
      */
-    public final void broadcast(JsonElement json) {
-        C component = jsonToComponent(json);
-        broadcast(component);
+    public final PlatformResult<String> broadcast(JsonElement json) {
+        return broadcast(jsonToComponent(json));
     }
 
     /**
@@ -223,24 +246,6 @@ public abstract class AbstractPlatformContext<S, C, P, CS> {
     }
 
     /**
-     * 发送消息给指定玩家
-     *
-     * <p>找不到玩家时静默忽略，不抛异常。需要区分"未找到"与"已发送"时，
-     * 请使用 {@link #sendPrivateMessage(String, UUID, JsonElement)}。
-     *
-     * @param name 玩家昵称
-     * @param uuid 玩家UUID
-     * @param json 消息内容，JSON 格式
-     */
-    public final void sendMessage(String name, String uuid, JsonElement json) {
-        P player = findPlayer(name, uuid);
-        if (player != null) {
-            C component = jsonToComponent(json);
-            sendMessage(player, component);
-        }
-    }
-
-    /**
      * 发送标题给所有玩家
      *
      * @param title    主标题，可为 null
@@ -248,43 +253,52 @@ public abstract class AbstractPlatformContext<S, C, P, CS> {
      * @param fadeIn   淡入时间（ticks）
      * @param stay     停留时间（ticks）
      * @param fadeOut  淡出时间（ticks）
-     * @throws ProtocolException 平台不支持标题时抛出 503
+     * @return 成功 / 失败结果；平台不支持时返回 {@link PlatformResultCode#UNSUPPORTED}
      */
-    public final void sendTitle(JsonElement title, JsonElement subtitle,
-                                int fadeIn, int stay, int fadeOut) throws ProtocolException {
+    public final PlatformResult<Void> sendTitle(JsonElement title, JsonElement subtitle,
+                                                int fadeIn, int stay, int fadeOut) {
         C titleComponent = title == null ? null : jsonToComponent(title);
         C subtitleComponent = subtitle == null ? null : jsonToComponent(subtitle);
-        sendTitleComponent(titleComponent, subtitleComponent, fadeIn, stay, fadeOut);
+        return sendTitleComponent(titleComponent, subtitleComponent, fadeIn, stay, fadeOut);
     }
 
     /**
      * 发送 ActionBar 给所有玩家
      *
      * @param json ActionBar 内容，JSON 格式
-     * @throws ProtocolException 平台不支持 ActionBar 时抛出 503
+     * @return 成功 / 失败结果；平台不支持时返回 {@link PlatformResultCode#UNSUPPORTED}
      */
-    public final void sendActionBar(JsonElement json) throws ProtocolException {
-        sendActionBarComponent(jsonToComponent(json));
+    public final PlatformResult<Void> sendActionBar(JsonElement json) {
+        return sendActionBarComponent(jsonToComponent(json));
     }
 
     /**
      * 发送私聊消息，并返回结果
      *
-     * <p>查找玩家、构造响应、发送三步都在本方法内完成——只有平台侧认识玩家类型 P，
+     * <p>查找玩家、发送、构造结果三步都在本方法内完成——只有平台侧认识玩家类型 P，
      * 因此这类"碰 P"的操作统一在本类内部收口，不向外暴露泛型。
+     *
+     * <p>成功时 data 为目标玩家的 Core DTO 快照（{@link PlayerModel}），
+     * 因此调用方可以据此构造自己的响应，而不需要知道平台玩家类型。
      *
      * @param nickname 目标玩家昵称，可为 null
      * @param uuid     目标玩家 UUID，可为 null
      * @param json     消息内容，JSON 格式
-     * @return 私聊结果：未找到玩家时为 {@code playerNotFound()}，成功时为 {@code sendSuccess(...)}
+     * @return 未找到玩家时为 {@link PlatformResultCode#PLAYER_NOT_FOUND}；
+     *         发送失败时透传发送结果码；成功时 data 为目标玩家快照
      */
-    public final PrivateMessageResponse sendPrivateMessage(String nickname, UUID uuid, JsonElement json) {
+    public final PlatformResult<PlayerModel> sendPrivateMessage(String nickname, UUID uuid, JsonElement json) {
         P player = findPlayer(nickname, uuid == null ? null : uuid.toString());
         if (player == null) {
-            return PrivateMessageResponse.playerNotFound();
+            return PlatformResult.failure(PlatformResultCode.PLAYER_NOT_FOUND, MESSAGE_PLAYER_NOT_FOUND);
         }
-        sendMessage(player, jsonToComponent(json));
-        return PrivateMessageResponse.sendSuccess(new PlayerModel(getPlayerName(player), getPlayerUUID(player)));
+
+        PlatformResult<Void> sent = sendPrivateMessage(player, jsonToComponent(json));
+        if (!sent.isSuccess()) {
+            return PlatformResult.failure(sent.getCode(), sent.getMessage());
+        }
+
+        return PlatformResult.success(new PlayerModel(getPlayerName(player), getPlayerUUID(player)));
     }
 
     /**
@@ -300,27 +314,6 @@ public abstract class AbstractPlatformContext<S, C, P, CS> {
     @SuppressWarnings("unchecked")
     public final boolean checkPermission(Object source, String permission) {
         return doCheckPermission((CS) source, permission);
-    }
-
-    /**
-     * 向命令源回执纯文本
-     *
-     * <p>文本会被包装为 {@code {"text": "..."}} 的 JSON 组件后交给平台。
-     *
-     * <p><b>空值语义</b>：{@code source} 为 null 时直接返回，不抛异常——
-     * 与平台启动/关闭路径上"无命令源"的回执调用保持一致。
-     *
-     * @param source 命令源，可为 null
-     * @param text   纯文本内容
-     */
-    @SuppressWarnings("unchecked")
-    public final void returnCallBackMessage(Object source, String text) {
-        if (source == null) {
-            return;
-        }
-        JsonObject obj = new JsonObject();
-        obj.addProperty("text", text);
-        returnCallBackMessage((CS) source, obj);
     }
 
     /**

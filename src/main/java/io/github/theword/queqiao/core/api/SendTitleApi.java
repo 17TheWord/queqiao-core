@@ -11,7 +11,9 @@ import org.slf4j.Logger;
  *
  * <p>协议名：{@code send_title}。
  *
- * <p>平台未实现标题时，{@code AbstractPlatformContext#sendTitleComponent} 会抛出 503。
+ * <p>平台未实现时 {@code AbstractPlatformContext#sendTitleComponent} 返回
+ * {@code PlatformResultCode.UNSUPPORTED}，由 {@link Api#mapPlatformResult} 统一映射为 503
+ * ——与迁移前直接抛出 503 的行为一致。
  */
 public final class SendTitleApi extends PlatformApi<TitlePayload, Void> {
 
@@ -42,8 +44,8 @@ public final class SendTitleApi extends PlatformApi<TitlePayload, Void> {
         validateDuration(payload.getStay(), "stay");
         validateDuration(payload.getFadeOut(), "fade_out");
 
-        platform.sendTitle(payload.getTitle(), payload.getSubtitle(),
-                payload.getFadeIn(), payload.getStay(), payload.getFadeOut());
+        requireSuccess(platform.sendTitle(payload.getTitle(), payload.getSubtitle(),
+                payload.getFadeIn(), payload.getStay(), payload.getFadeOut()));
         return null;
     }
 

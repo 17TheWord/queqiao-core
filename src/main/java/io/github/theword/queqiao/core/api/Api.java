@@ -10,6 +10,8 @@ import com.google.gson.JsonParseException;
 import io.github.theword.queqiao.core.constant.ProtocolConstants;
 import io.github.theword.queqiao.core.exception.protocol.ProtocolException;
 import io.github.theword.queqiao.core.payload.EmptyPayload;
+import io.github.theword.queqiao.core.platform.PlatformResult;
+import io.github.theword.queqiao.core.platform.PlatformResultCode;
 import io.github.theword.queqiao.core.utils.GsonUtils;
 import org.slf4j.Logger;
 
@@ -26,6 +28,12 @@ import org.slf4j.Logger;
  * 子类只需实现 {@link #doExecute(Object)} 处理已经解析好的负载。
  *
  * <p>
+ * <b>平台结果统一转换</b>：平台能力统一返回 {@link PlatformResult}，
+ * 子类用 {@link #requireSuccess(PlatformResult)} 取成功数据即可，失败会自动转成
+ * {@link ProtocolException}。通用映射由 {@link #mapPlatformResult(PlatformResult)} 提供，
+ * 只有需要特殊协议语义的 Api 才覆盖它——<b>不要在 {@code doExecute} 里写完整的 switch</b>。
+ *
+ * <p>
  * <b>依赖由子类自行注入</b>：本基类只持有 {@link Logger} 这一项基础设施，
  * <b>不持有任何平台能力</b>。Logger 是输出通道而非能力——持有它无法对世界产生副作用，
  * 因此不构成"每个 Api 都能看见全部能力"的隐式耦合；真正需要平台能力的 Api
@@ -37,7 +45,7 @@ import org.slf4j.Logger;
  * 不要为每次调用机械补一行日志。级别建议：
  * <ul>
  *     <li>{@code debug} —— 正常流程细节（收到请求、命中缓存）；可能被高频轮询的接口一律用 debug</li>
- *     <li>{@code info} —— 状态变更（如已执行 Rcon 命令）</li>
+ *     <li>{@code info} —— 状态变更（如已广播、已执行 Rcon 命令）</li>
  *     <li>{@code warn} —— 被拒绝的请求（参数非法、平台不支持）</li>
  *     <li>{@code error} —— 未预期异常；此类日志由 {@code ProtocolRouter} 统一记录，子类一般不必重复</li>
  * </ul>
@@ -133,4 +141,58 @@ public abstract class Api<P, R> {
      * @throws ProtocolException 处理失败
      */
     protected abstract R doExecute(P payload) throws ProtocolException;
+
+    // ------------------------------------------------------------------
+    // PlatformResult 统一转换
+    // ------------------------------------------------------------------
+
+    /**
+     * 取出平台操作的成功数据；失败时抛出由 {@link #mapPlatformResult(PlatformResult)} 映射的协议异常
+     *
+     * @param result 平台结果，不得为 null
+     * @param <T>    数据类型
+     * @return 成功数据（可能为 null，{@link Void} 场景）
+     * @throws ProtocolException 平台结果非成功时
+     */
+    protected final <T> T requireSuccess(PlatformResult<T> result) throws ProtocolException {
+        if (result.isSuccess()) {
+            return result.getData();
+        }
+        throw mapPlatformResult(result);
+    }
+
+    /**
+     * 把平台失败结果映射为协议异常
+     *
+     * <p>默认映射（Java 8 的传统 switch；状态码语义以 {@code ProtocolException} 现有工厂为准）：
+     * <ul>
+     *     <li>{@link PlatformResultCode#INVALID_ARGUMENT} → 400</li>
+     *     <li>{@link PlatformResultCode#UNSUPPORTED} → 503（平台未实现该能力，等价于迁移前
+     *         {@code sendTitleComponent} / {@code sendActionBarComponent} 直接抛出的 503）</li>
+     *     <li>{@link PlatformResultCode#FAILED} → 500</li>
+     *     <li>{@link PlatformResultCode#PLAYER_NOT_FOUND} → 500（默认；需要特殊语义的 Api 应覆盖本方法）</li>
+     * </ul>
+     *
+     * <p><b>覆盖而非替换</b>：子类只处理自己关心的结果码，其余交回 {@code super}，
+     * 从而避免每个 Api 重复编写完整的 switch。
+     *
+     * @param result 平台失败结果，不得为 null
+     * @return 对应的协议异常
+     */
+    protected ProtocolException mapPlatformResult(PlatformResult<?> result) {
+        String message = result.getMessage() != null
+                ? result.getMessage()
+                : result.getCode().name();
+
+        switch (result.getCode()) {
+            case INVALID_ARGUMENT:
+                return ProtocolException.badRequest(message);
+            case UNSUPPORTED:
+                return ProtocolException.serviceUnavailable(message, null);
+            case FAILED:
+            case PLAYER_NOT_FOUND:
+            default:
+                return ProtocolException.internalError(message);
+        }
+    }
 }

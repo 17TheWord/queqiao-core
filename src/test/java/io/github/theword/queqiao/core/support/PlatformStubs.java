@@ -9,6 +9,8 @@ import io.github.theword.queqiao.core.constant.ServerTypeConstant;
 import io.github.theword.queqiao.core.exception.rcon.RconException;
 import io.github.theword.queqiao.core.handle.HandleProtocolMessage;
 import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
+import io.github.theword.queqiao.core.platform.PlatformResult;
+import io.github.theword.queqiao.core.platform.PlatformResultCode;
 import io.github.theword.queqiao.core.platform.TestCommandSource;
 import io.github.theword.queqiao.core.platform.TestComponent;
 import io.github.theword.queqiao.core.platform.TestPlayer;
@@ -148,6 +150,26 @@ public final class PlatformStubs {
 
         private volatile boolean permissionGranted = true;
 
+        /**
+         * 平台是否支持标题；false 时 {@code sendTitleComponent} 交回基类默认实现（UNSUPPORTED）
+         */
+        private volatile boolean titleSupported = true;
+
+        /**
+         * 平台是否支持 ActionBar；false 时 {@code sendActionBarComponent} 交回基类默认实现（UNSUPPORTED）
+         */
+        private volatile boolean actionBarSupported = true;
+
+        /**
+         * 强制 broadcast 失败的结果码；null 表示不强制失败
+         */
+        private volatile PlatformResultCode broadcastFailure;
+
+        /**
+         * 强制 sendMessage 失败的结果码；null 表示不强制失败
+         */
+        private volatile PlatformResultCode sendFailure;
+
         public RecordingPlatformContext() {
             super(new TestServer());
             players.add(new TestPlayer("Player1", UUID.randomUUID()));
@@ -192,15 +214,23 @@ public final class PlatformStubs {
         }
 
         @Override
-        public void broadcast(TestComponent component) {
+        public PlatformResult<String> broadcast(TestComponent component) {
+            if (broadcastFailure != null) {
+                return PlatformResult.failure(broadcastFailure, "forced broadcast failure");
+            }
             broadcasts.add(component.getJson());
+            return PlatformResult.success(component.getJson());
         }
 
         @Override
-        public void sendMessage(TestPlayer player, TestComponent component) {
+        public PlatformResult<Void> sendPrivateMessage(TestPlayer player, TestComponent component) {
+            if (sendFailure != null) {
+                return PlatformResult.failure(sendFailure, "forced send failure");
+            }
             privateMessages.add("nickname=" + player.getName()
                     + ", uuid=" + player.getUuid()
                     + ", message=" + component.getJson());
+            return PlatformResult.success(null);
         }
 
         @Override
@@ -216,16 +246,26 @@ public final class PlatformStubs {
         // ---- 可选原语：测试桩全部支持，以便验证成功路径 ----
 
         @Override
-        public void sendTitleComponent(TestComponent title, TestComponent subtitle,
-                                       int fadeIn, int stay, int fadeOut) {
+        public PlatformResult<Void> sendTitleComponent(TestComponent title, TestComponent subtitle,
+                                                       int fadeIn, int stay, int fadeOut) {
+            if (!titleSupported) {
+                // 交回基类默认实现 → PlatformResultCode.UNSUPPORTED，用于验证 503 映射
+                return super.sendTitleComponent(title, subtitle, fadeIn, stay, fadeOut);
+            }
             titleCalls.add("title=" + jsonOf(title)
                     + ", subtitle=" + jsonOf(subtitle)
                     + ", fadeIn=" + fadeIn + ", stay=" + stay + ", fadeOut=" + fadeOut);
+            return PlatformResult.success(null);
         }
 
         @Override
-        public void sendActionBarComponent(TestComponent component) {
+        public PlatformResult<Void> sendActionBarComponent(TestComponent component) {
+            if (!actionBarSupported) {
+                // 交回基类默认实现 → PlatformResultCode.UNSUPPORTED，用于验证 503 映射
+                return super.sendActionBarComponent(component);
+            }
             actionBars.add(component.getJson());
+            return PlatformResult.success(null);
         }
 
         private static String jsonOf(TestComponent component) {
@@ -246,6 +286,37 @@ public final class PlatformStubs {
          */
         public void setPermissionGranted(boolean granted) {
             this.permissionGranted = granted;
+        }
+
+        /**
+         * 设置平台是否支持标题（false → UNSUPPORTED → 503）
+         */
+        public void setTitleSupported(boolean supported) {
+            this.titleSupported = supported;
+        }
+
+        /**
+         * 设置平台是否支持 ActionBar（false → UNSUPPORTED → 503）
+         */
+        public void setActionBarSupported(boolean supported) {
+            this.actionBarSupported = supported;
+        }
+
+        /**
+         * 强制 broadcast 返回指定失败码；传 null 恢复成功
+         */
+        public void failBroadcastWith(PlatformResultCode code) {
+            this.broadcastFailure = code;
+        }
+
+        /**
+         * 强制 sendMessage 返回指定失败码；传 null 恢复成功
+         *
+         * <p>由于 {@code sendPrivateMessage} 在基类中是 final 且会透传发送结果，
+         * 本开关可以间接驱动私聊的失败路径。
+         */
+        public void failSendWith(PlatformResultCode code) {
+            this.sendFailure = code;
         }
 
         public List<String> getBroadcasts() {
