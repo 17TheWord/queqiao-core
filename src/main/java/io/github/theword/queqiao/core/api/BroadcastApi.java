@@ -1,25 +1,22 @@
 package io.github.theword.queqiao.core.api;
 
 import java.util.Collections;
-import java.util.Objects;
 import java.util.Set;
 
 import io.github.theword.queqiao.core.constant.ProtocolConstants;
 import io.github.theword.queqiao.core.payload.MessagePayload;
 import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
+import org.slf4j.Logger;
 
 /**
  * 广播消息
  *
  * <p>协议名：{@code broadcast}，别名 {@code send_msg}。
  */
-public final class BroadcastApi extends Api<MessagePayload, Void> {
+public final class BroadcastApi extends PlatformApi<MessagePayload, Void> {
 
-    private final AbstractPlatformContext<?, ?, ?, ?> platformContext;
-
-    public BroadcastApi(AbstractPlatformContext<?, ?, ?, ?> platformContext) {
-        super(MessagePayload.class);
-        this.platformContext = Objects.requireNonNull(platformContext, "platformContext");
+    public BroadcastApi(Logger logger, AbstractPlatformContext<?, ?, ?, ?> platform) {
+        super(MessagePayload.class, logger, platform);
     }
 
     @Override
@@ -34,7 +31,7 @@ public final class BroadcastApi extends Api<MessagePayload, Void> {
 
     @Override
     protected Void doExecute(MessagePayload payload) {
-        platformContext.broadcast(payload.getMessage());
+        platform.broadcast(payload.getMessage());
         return null;
     }
 }

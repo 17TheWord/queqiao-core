@@ -1,11 +1,10 @@
 package io.github.theword.queqiao.core.api;
 
-import java.util.Objects;
-
 import io.github.theword.queqiao.core.constant.ProtocolConstants;
 import io.github.theword.queqiao.core.exception.protocol.ProtocolException;
 import io.github.theword.queqiao.core.payload.MessagePayload;
 import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
+import org.slf4j.Logger;
 
 /**
  * 发送 ActionBar
@@ -15,13 +14,10 @@ import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
  * <p>平台未实现 ActionBar 时，{@code AbstractPlatformContext#sendActionBarComponent}
  * 会抛出 503。
  */
-public final class SendActionBarApi extends Api<MessagePayload, Void> {
+public final class SendActionBarApi extends PlatformApi<MessagePayload, Void> {
 
-    private final AbstractPlatformContext<?, ?, ?, ?> platformContext;
-
-    public SendActionBarApi(AbstractPlatformContext<?, ?, ?, ?> platformContext) {
-        super(MessagePayload.class);
-        this.platformContext = Objects.requireNonNull(platformContext, "platformContext");
+    public SendActionBarApi(Logger logger, AbstractPlatformContext<?, ?, ?, ?> platform) {
+        super(MessagePayload.class, logger, platform);
     }
 
     @Override
@@ -31,7 +27,7 @@ public final class SendActionBarApi extends Api<MessagePayload, Void> {
 
     @Override
     protected Void doExecute(MessagePayload payload) throws ProtocolException {
-        platformContext.sendActionBar(payload.getMessage());
+        platform.sendActionBar(payload.getMessage());
         return null;
     }
 }

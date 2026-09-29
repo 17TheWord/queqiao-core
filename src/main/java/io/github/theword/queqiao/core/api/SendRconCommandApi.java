@@ -15,7 +15,8 @@ import org.slf4j.Logger;
  *
  * <p>协议名：{@code send_rcon_command}。
  *
- * <p>该 Api 与平台无关——它只依赖 Runtime 注入的 RCON 执行器。
+ * <p>该 Api 与平台无关——它只依赖 Runtime 注入的 RCON 执行器，
+ * 因此<b>不</b>继承 {@link PlatformApi}，也不要求平台上下文。
  *
  * <p>状态码语义（不同失败原因不统一归为 400）：
  * <ul>
@@ -30,12 +31,10 @@ import org.slf4j.Logger;
 public final class SendRconCommandApi extends Api<CommandPayload, String> {
 
     private final RconCommandExecutor rconCommandExecutor;
-    private final Logger logger;
 
-    public SendRconCommandApi(RconCommandExecutor rconCommandExecutor, Logger logger) {
-        super(CommandPayload.class);
+    public SendRconCommandApi(Logger logger, RconCommandExecutor rconCommandExecutor) {
+        super(CommandPayload.class, logger);
         this.rconCommandExecutor = Objects.requireNonNull(rconCommandExecutor, "rconCommandExecutor");
-        this.logger = Objects.requireNonNull(logger, "logger");
     }
 
     @Override

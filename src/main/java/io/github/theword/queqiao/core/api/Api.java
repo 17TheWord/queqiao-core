@@ -11,13 +11,14 @@ import io.github.theword.queqiao.core.constant.ProtocolConstants;
 import io.github.theword.queqiao.core.exception.protocol.ProtocolException;
 import io.github.theword.queqiao.core.payload.EmptyPayload;
 import io.github.theword.queqiao.core.utils.GsonUtils;
+import org.slf4j.Logger;
 
 /**
  * 协议 API 抽象基类
  *
  * <p>
  * 一个 Api 就是一个可被客户端调用的协议接口。它<b>自描述</b>——名字由 {@link #name()} 声明，
- * 而不是在外部注册表里配对，因此新增 api 不需要修改路由代码。
+ * 别名由 {@link #aliases()} 声明，而不是在外部注册表里配对，因此新增 api 不需要修改路由代码。
  *
  * <p>
  * <b>负载解析由框架代劳</b>：{@link #execute(JsonElement)} 是 final 模板方法，
@@ -25,8 +26,21 @@ import io.github.theword.queqiao.core.utils.GsonUtils;
  * 子类只需实现 {@link #doExecute(Object)} 处理已经解析好的负载。
  *
  * <p>
- * <b>依赖由子类自行注入</b>：本基类<b>不持有</b>日志实现，也不持有任何平台依赖。
- * 需要什么就在子类构造器里显式接收，避免"每个 Api 都能看见全部能力"的隐式耦合。
+ * <b>依赖由子类自行注入</b>：本基类只持有 {@link Logger} 这一项基础设施，
+ * <b>不持有任何平台能力</b>。Logger 是输出通道而非能力——持有它无法对世界产生副作用，
+ * 因此不构成"每个 Api 都能看见全部能力"的隐式耦合；真正需要平台能力的 Api
+ * 请继承 {@link PlatformApi}，其余依赖仍在子类构造器里显式接收。
+ *
+ * <p>
+ * <b>日志使用约定</b>：基类提供 {@link #logger} 是为了让每个 Api 都<b>有能力</b>打日志，
+ * 而不是要求每个 Api 都<b>必须</b>打日志。只在有诊断价值的位置输出，
+ * 不要为每次调用机械补一行日志。级别建议：
+ * <ul>
+ *     <li>{@code debug} —— 正常流程细节（收到请求、命中缓存）；可能被高频轮询的接口一律用 debug</li>
+ *     <li>{@code info} —— 状态变更（如已执行 Rcon 命令）</li>
+ *     <li>{@code warn} —— 被拒绝的请求（参数非法、平台不支持）</li>
+ *     <li>{@code error} —— 未预期异常；此类日志由 {@code ProtocolRouter} 统一记录，子类一般不必重复</li>
+ * </ul>
  *
  * <p>
  * <b>线程安全约束（重要）</b>：Api 实例由 {@code ProtocolRouter} 在构造阶段创建一次，
@@ -35,7 +49,7 @@ import io.github.theword.queqiao.core.utils.GsonUtils;
  * 违反该约束会引入静默的数据竞争：不同连接的请求会互相污染中间状态。
  *
  * <p>
- * <b>不访问静态全局状态</b>：所有依赖应由构造器注入，
+ * <b>不访问静态全局状态</b>：所有依赖（含 {@link Logger}）应由构造器注入，
  * 否则协议层将无法脱离全局上下文独立测试。
  *
  * @param <P> 负载类型
@@ -43,13 +57,23 @@ import io.github.theword.queqiao.core.utils.GsonUtils;
  */
 public abstract class Api<P, R> {
 
+    /**
+     * 日志实现
+     *
+     * <p>基类<b>唯一</b>持有的非负载依赖，由创建方注入。
+     * 子类直接使用本字段，<b>不应</b>再自己保存一份。
+     */
+    protected final Logger logger;
+
     private final Class<P> payloadType;
 
     /**
      * @param payloadType 负载类型，不得为 null
+     * @param logger      日志实现，不得为 null
      */
-    protected Api(Class<P> payloadType) {
+    protected Api(Class<P> payloadType, Logger logger) {
         this.payloadType = Objects.requireNonNull(payloadType, "payloadType");
+        this.logger = Objects.requireNonNull(logger, "logger");
     }
 
     /**

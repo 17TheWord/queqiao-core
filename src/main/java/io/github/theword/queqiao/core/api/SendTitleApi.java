@@ -1,7 +1,5 @@
 package io.github.theword.queqiao.core.api;
 
-import java.util.Objects;
-
 import io.github.theword.queqiao.core.constant.ProtocolConstants;
 import io.github.theword.queqiao.core.exception.protocol.ProtocolException;
 import io.github.theword.queqiao.core.payload.TitlePayload;
@@ -15,7 +13,7 @@ import org.slf4j.Logger;
  *
  * <p>平台未实现标题时，{@code AbstractPlatformContext#sendTitleComponent} 会抛出 503。
  */
-public final class SendTitleApi extends Api<TitlePayload, Void> {
+public final class SendTitleApi extends PlatformApi<TitlePayload, Void> {
 
     /**
      * Title 时间参数上限（ticks）
@@ -25,13 +23,8 @@ public final class SendTitleApi extends Api<TitlePayload, Void> {
      */
     private static final int MAX_TITLE_DURATION_TICKS = 20 * 60 * 60;
 
-    private final AbstractPlatformContext<?, ?, ?, ?> platformContext;
-    private final Logger logger;
-
-    public SendTitleApi(AbstractPlatformContext<?, ?, ?, ?> platformContext, Logger logger) {
-        super(TitlePayload.class);
-        this.platformContext = Objects.requireNonNull(platformContext, "platformContext");
-        this.logger = Objects.requireNonNull(logger, "logger");
+    public SendTitleApi(Logger logger, AbstractPlatformContext<?, ?, ?, ?> platform) {
+        super(TitlePayload.class, logger, platform);
     }
 
     @Override
@@ -49,7 +42,7 @@ public final class SendTitleApi extends Api<TitlePayload, Void> {
         validateDuration(payload.getStay(), "stay");
         validateDuration(payload.getFadeOut(), "fade_out");
 
-        platformContext.sendTitle(payload.getTitle(), payload.getSubtitle(),
+        platform.sendTitle(payload.getTitle(), payload.getSubtitle(),
                 payload.getFadeIn(), payload.getStay(), payload.getFadeOut());
         return null;
     }

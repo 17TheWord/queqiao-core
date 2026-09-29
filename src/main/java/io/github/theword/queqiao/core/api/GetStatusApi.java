@@ -13,17 +13,16 @@ import org.slf4j.Logger;
  *
  * <p>协议名：{@code get_status}。无负载。
  *
- * <p>该 Api 与平台无关——它只读取 Runtime 实例级的状态采集器。
+ * <p>该 Api 与平台无关——它只读取 Runtime 实例级的状态采集器，
+ * 因此<b>不</b>继承 {@link PlatformApi}，也不要求平台上下文。
  */
 public final class GetStatusApi extends Api<EmptyPayload, Map<String, Object>> {
 
     private final ServerStatusCollector serverStatusCollector;
-    private final Logger logger;
 
-    public GetStatusApi(ServerStatusCollector serverStatusCollector, Logger logger) {
-        super(EmptyPayload.class);
+    public GetStatusApi(Logger logger, ServerStatusCollector serverStatusCollector) {
+        super(EmptyPayload.class, logger);
         this.serverStatusCollector = Objects.requireNonNull(serverStatusCollector, "serverStatusCollector");
-        this.logger = Objects.requireNonNull(logger, "logger");
     }
 
     @Override

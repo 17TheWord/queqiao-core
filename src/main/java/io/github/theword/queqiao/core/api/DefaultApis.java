@@ -20,13 +20,22 @@ import org.slf4j.Logger;
  * new ProtocolRouter(logger, DefaultApis.all(ctx, status, rcon, logger));
  *
  * // 只要广播
- * new ProtocolRouter(logger, Collections.singletonList(new BroadcastApi(ctx)));
+ * new ProtocolRouter(logger, Collections.singletonList(new BroadcastApi(logger, ctx)));
  *
  * // 默认 + 追加自己的
  * List&lt;Api&lt;?, ?&gt;&gt; apis = new ArrayList&lt;&gt;(DefaultApis.all(ctx, status, rcon, logger));
  * apis.add(new MyCustomApi());
  * new ProtocolRouter(logger, apis);
  * </pre>
+ *
+ * <p><b>默认集合的构成</b>——按"是否依赖平台能力"分两类：
+ * <ul>
+ *     <li>{@link PlatformApi}（4）：{@code broadcast}（含别名 {@code send_msg}）、
+ *         {@code send_title}、{@code send_actionbar}、{@code send_private_msg}
+ *         ——都需要 {@link AbstractPlatformContext}；</li>
+ *     <li>{@link Api}（3）：{@code get_status}、{@code send_rcon_command}、{@code send_command}
+ *         ——分别只依赖状态采集器、RCON 执行器、无依赖，<b>不</b>要求平台上下文。</li>
+ * </ul>
  *
  * @since 0.7.0
  */
@@ -52,13 +61,13 @@ public final class DefaultApis {
             Logger logger
     ) {
         List<Api<?, ?>> apis = new ArrayList<>();
-        apis.add(new BroadcastApi(platformContext));
-        apis.add(new SendTitleApi(platformContext, logger));
-        apis.add(new SendActionBarApi(platformContext));
-        apis.add(new SendPrivateMessageApi(platformContext));
-        apis.add(new SendCommandApi());
-        apis.add(new SendRconCommandApi(rconCommandExecutor, logger));
-        apis.add(new GetStatusApi(serverStatusCollector, logger));
+        apis.add(new BroadcastApi(logger, platformContext));
+        apis.add(new SendTitleApi(logger, platformContext));
+        apis.add(new SendActionBarApi(logger, platformContext));
+        apis.add(new SendPrivateMessageApi(logger, platformContext));
+        apis.add(new SendCommandApi(logger));
+        apis.add(new SendRconCommandApi(logger, rconCommandExecutor));
+        apis.add(new GetStatusApi(logger, serverStatusCollector));
         return apis;
     }
 }
