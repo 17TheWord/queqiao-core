@@ -2,7 +2,7 @@ package io.github.theword.queqiao.core.command.subCommand.client;
 
 import io.github.theword.queqiao.core.command.SubCommand;
 import io.github.theword.queqiao.core.constant.CommandConstant;
-import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
+import io.github.theword.queqiao.core.platform.CommandSource;
 import io.github.theword.queqiao.core.utils.Tool;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
 import io.github.theword.queqiao.core.websocket.WsClient;
@@ -19,13 +19,12 @@ public class ReconnectCommand extends SubCommand {
     private final WebsocketManager websocketManager;
 
     public ReconnectCommand(
-            AbstractPlatformContext<?, ?, ?, ?> platformContext,
             Logger logger,
             WebsocketManager websocketManager) {
-        super(platformContext, logger);
+        super(logger);
         this.websocketManager = Objects.requireNonNull(
                 websocketManager, "websocketManager 不能为 null：命令树须在 Runtime.start() 之后构建");
-        addChild(new ReconnectAllCommand(platformContext, logger));
+        addChild(new ReconnectAllCommand(logger));
     }
 
     /**
@@ -61,12 +60,12 @@ public class ReconnectCommand extends SubCommand {
     /**
      * 重连 WebSocket 客户端 reconnect 命令调用
      *
-     * @param commandReturner 命令执行者
+     * @param source 命令来源
      * @param args            命令参数
      */
     @Override
-    protected void onExecute(Object commandReturner, List<String> args) {
-        reconnect(commandReturner, false);
+    protected void onExecute(CommandSource source, List<String> args) {
+        reconnect(source, false);
     }
 
     /**
@@ -87,12 +86,11 @@ public class ReconnectCommand extends SubCommand {
      * 命令返回消息实现与 Manager。改为实例方法后依赖由构造器注入，
      * 平台侧不能再以 {@code ReconnectCommand.reconnect(...)} 静态调用。
      *
-     * @param commandReturner 命令执行者
+     * @param source 命令来源
      * @param all             是否强制重连全部客户端
      */
-    public void reconnect(Object commandReturner, boolean all) {
-        platformContext.returnCallBackMessage(
-                commandReturner, all ? CommandConstant.RECONNECT_ALL_CLIENT : CommandConstant.RECONNECT_NOT_OPEN_CLIENT);
+    public void reconnect(CommandSource source, boolean all) {
+        source.reply(all ? CommandConstant.RECONNECT_ALL_CLIENT : CommandConstant.RECONNECT_NOT_OPEN_CLIENT);
 
         List<WsClient> wsClientList = websocketManager.getWsClientList();
 
@@ -103,13 +101,12 @@ public class ReconnectCommand extends SubCommand {
                 continue;
             }
             wsClient.reconnectNow();
-            platformContext.returnCallBackMessage(
-                    commandReturner, Tool.format(CommandConstant.RECONNECT_MESSAGE, wsClient.getURI()));
+            source.reply(Tool.format(CommandConstant.RECONNECT_MESSAGE, wsClient.getURI()));
         }
 
         if (alreadyOpenCount == wsClientList.size()) {
-            platformContext.returnCallBackMessage(commandReturner, CommandConstant.RECONNECT_NO_CLIENT_NEED_RECONNECT);
+            source.reply(CommandConstant.RECONNECT_NO_CLIENT_NEED_RECONNECT);
         }
-        platformContext.returnCallBackMessage(commandReturner, CommandConstant.RECONNECTED);
+        source.reply(CommandConstant.RECONNECTED);
     }
 }

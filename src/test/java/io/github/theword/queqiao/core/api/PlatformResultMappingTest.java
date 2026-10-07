@@ -47,12 +47,12 @@ class PlatformResultMappingTest {
     private static final Logger LOGGER = LoggerFactory.getLogger(PlatformResultMappingTest.class);
     private static final Gson GSON = new Gson();
 
-    private static Response dispatch(AbstractPlatformContext<?, ?, ?, ?> platform, String rawJson) {
+    private static Response dispatch(AbstractPlatformContext<?, ?, ?> platform, String rawJson) {
         return dispatch(platform, PlatformStubs.rconExecutorReturning(""), rawJson);
     }
 
     private static Response dispatch(
-            AbstractPlatformContext<?, ?, ?, ?> platform,
+            AbstractPlatformContext<?, ?, ?> platform,
             RconCommandExecutor rconCommandExecutor,
             String rawJson) {
         HandleProtocolMessage dispatcher =
@@ -75,7 +75,7 @@ class PlatformResultMappingTest {
     // ------------------------------------------------------------------
 
     @Test
-    @DisplayName("broadcast 成功 → 200，且平台确实被调用")
+    @DisplayName("broadcast 成功 → 200，且响应不携带任何数据（Core 语义只有成功/失败）")
     void broadcastSuccess() {
         PlatformStubs.RecordingPlatformContext platform = PlatformStubs.recordingPlatformContext();
 
@@ -83,6 +83,7 @@ class PlatformResultMappingTest {
 
         assertEquals(ProtocolConstants.Status.SUCCESS, response.getCode().intValue());
         assertEquals(1, platform.getBroadcasts().size());
+        assertNull(response.getData(), "broadcast 不返回渲染文本等底层平台数据");
     }
 
     @Test

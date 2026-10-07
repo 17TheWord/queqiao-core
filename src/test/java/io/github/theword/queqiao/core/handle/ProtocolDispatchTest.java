@@ -51,7 +51,7 @@ class ProtocolDispatchTest {
      */
     private static Response dispatch(
             String rawJson,
-            AbstractPlatformContext<?, ?, ?, ?> platformContext,
+            AbstractPlatformContext<?, ?, ?> platformContext,
             RconCommandExecutor rconCommandExecutor) {
         String responseJson = PlatformStubs.newDispatcher(LOGGER, GSON, platformContext, rconCommandExecutor).handleHttpJson(rawJson);
         Response response = GSON.fromJson(responseJson, Response.class);

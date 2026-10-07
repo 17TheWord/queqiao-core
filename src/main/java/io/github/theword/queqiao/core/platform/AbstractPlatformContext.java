@@ -4,7 +4,6 @@ import java.util.Collection;
 import java.util.UUID;
 
 import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
 
 import io.github.theword.queqiao.core.constant.ProtocolConstants;
 import io.github.theword.queqiao.core.constant.ServerTypeConstant;
@@ -16,7 +15,17 @@ import io.github.theword.queqiao.core.event.model.PlayerModel;
  * <p>平台侧继承本类并实现其中的抽象原语；core 侧只通过本类的公开方法访问平台能力，
  * 因此 core 不依赖任何具体服务端的类型。
  *
- * <p><b>结果表达（重要）</b>：平台操作统一返回 {@link PlatformResult}，
+ * <p><b>职责边界（重要）</b>：本类只描述"平台本身能做什么"——
+ * 平台元数据、玩家查询、组件转换、广播、私聊、Title、ActionBar。
+ * <b>不负责</b>命令来源相关能力：回执（{@code reply}）与权限判定已归属
+ * {@link CommandSource}，命令来源的类型转换也不在本类。
+ * 两者职责完全分离：
+ * <pre>
+ * AbstractPlatformContext   平台整体能力
+ * CommandSource             命令来源能力（谁发起的 / 如何回复 / 其权限）
+ * </pre>
+ *
+ * <p><b>结果表达</b>：平台操作统一返回 {@link PlatformResult}，
  * 用 {@link PlatformResultCode} 表达"平台侧发生了什么"。
  * 本类<b>不</b>依赖 {@code ProtocolException}、{@code Response}、
  * {@code PrivateMessageResponse} 或任何协议类型——
@@ -24,22 +33,21 @@ import io.github.theword.queqiao.core.event.model.PlayerModel;
  * 因此其它模块（命令层、未来的非协议调用方）也可以直接调用本类并消费结果，
  * 不需要经过 Api / WebSocket。
  *
- * <p><b>公开方法签名约定（重要）</b>：本类的公开方法签名中<b>不出现</b>
- * {@code S / C / P / CS} 这四个类型参数。这样 core 侧持有
- * {@code AbstractPlatformContext<?, ?, ?, ?>} 时仍可直接调用，
- * 无需到处传播通配符；凡是要用到平台类型 P / C / CS 的操作，
+ * <p><b>公开方法签名约定（重要）</b>：core 侧调用的公开方法签名中<b>不出现</b>
+ * {@code S / C / P} 这三个类型参数。这样 core 侧持有
+ * {@code AbstractPlatformContext<?, ?, ?>} 时仍可直接调用，
+ * 无需到处传播通配符；凡是要用到平台类型 P / C 的操作，
  * 都在本类内部一次性完成。
  *
  * <p><b>延迟绑定</b>：{@link #getServerType()} 与 {@link #getServerVersion()}
  * 只要求在本上下文被使用前（即 Runtime {@code start()} 之后）可用，
  * 不要求构造时即可用。因此平台可以在服务端实例就绪之前先构造本上下文。
  *
- * @param <S>  服务端实例类型
- * @param <C>  消息组件类型
- * @param <P>  玩家类型
- * @param <CS> 命令源类型
+ * @param <S> 服务端实例类型
+ * @param <C> 消息组件类型
+ * @param <P> 玩家类型
  */
-public abstract class AbstractPlatformContext<S, C, P, CS> {
+public abstract class AbstractPlatformContext<S, C, P> {
 
     /**
      * 目标玩家不存在的说明
@@ -125,14 +133,20 @@ public abstract class AbstractPlatformContext<S, C, P, CS> {
     /**
      * 广播组件给所有玩家
      *
-     * <p>成功时返回"适合 Core 上层使用"的消息文本（由平台把 {@code C} 渲染成文本，
-     * 因为只有平台认识自己的组件类型）。该文本用于日志与其它非协议调用方；
-     * {@code C} 本身<b>不会</b>离开平台层。
+     * <p><b>Core 语义只有"广播成功 / 广播失败"</b>，因此不返回任何数据：
+     * 底层平台 API 的返回值（例如渲染后的文本）对 Core 调用者没有业务意义，
+     * 不应作为返回值暴露出来。
+     *
+     * <p>{@code C} 本身<b>不会</b>离开平台层。
+     *
+     * <p>若将来 Core 确实需要广播人数、消息 ID 等领域数据，
+     * 应引入专门的领域结果类型（如 {@code BroadcastResult}），
+     * 而不是保留一个无法回答"这个值代表什么"的 {@code String}。
      *
      * @param component 平台组件
-     * @return 成功时 data 为渲染后的文本；失败时返回相应的失败结果
+     * @return 成功 / 失败结果
      */
-    public abstract PlatformResult<String> broadcast(C component);
+    public abstract PlatformResult<Void> broadcast(C component);
 
     /**
      * 发送组件给指定玩家
@@ -142,27 +156,6 @@ public abstract class AbstractPlatformContext<S, C, P, CS> {
      * @return 成功 / 失败结果
      */
     public abstract PlatformResult<Void> sendPrivateMessage(P player, C component);
-
-    /**
-     * 判断命令源是否具有指定权限
-     *
-     * <p><b>命名说明</b>：本方法名带 {@code do} 前缀，是为了与公开入口
-     * {@link #checkPermission(Object, String)} 区分——两者擦除后签名相同，
-     * 同名会导致编译期的 name clash。
-     *
-     * @param source     命令源
-     * @param permission 权限节点
-     * @return 是否具有权限
-     */
-    public abstract boolean doCheckPermission(CS source, String permission);
-
-    /**
-     * 向命令源回执组件
-     *
-     * @param source    命令源
-     * @param component 平台组件
-     */
-    public abstract void returnCallBackMessage(CS source, C component);
 
     // ------------------------------------------------------------------
     // 可选原语：默认表示"平台不支持"，平台按需覆盖
@@ -208,40 +201,46 @@ public abstract class AbstractPlatformContext<S, C, P, CS> {
      * 广播 JSON 组件给所有玩家
      *
      * @param json JSON 组件
-     * @return 成功时 data 为渲染后的文本
+     * @return 成功 / 失败结果
      */
-    public final PlatformResult<String> broadcast(JsonElement json) {
+    public final PlatformResult<Void> broadcast(JsonElement json) {
         return broadcast(jsonToComponent(json));
     }
 
     /**
-     * 根据玩家昵称和 UUID 查找玩家对象
+     * 根据玩家名称或 UUID 查找在线玩家。
      *
-     * <p>注意：
-     * <ol>
-     *     <li>优先使用 UUID 查找玩家对象，因为 UUID 是唯一标识符，而昵称可能会重复；</li>
-     *     <li>如果昵称和 UUID 都为空，则返回 null；</li>
-     *     <li>平台返回的 UUID 或昵称为 null 时跳过该玩家，不会抛 NPE。</li>
-     * </ol>
+     * <p>当同时提供名称和 UUID 时，优先使用 UUID 进行查找，名称不参与匹配。
+     * 当未提供 UUID 时，才使用名称进行查找。
      *
-     * @param name 玩家昵称
-     * @param uuid 玩家UUID
-     * @return 玩家对象，未找到时返回 null
+     * <p>如果名称和 UUID 均未提供，或未找到匹配的在线玩家，则返回 {@code null}。
+     *
+     * @param name 玩家名称，可以为 {@code null} 或空字符串
+     * @param uuid 玩家 UUID 字符串，可以为 {@code null} 或空字符串
+     * @return 匹配的在线玩家，未找到时返回 {@code null}
      */
     public final P findPlayer(String name, String uuid) {
-        if ((name == null || name.isEmpty()) && (uuid == null || uuid.isEmpty())) {
+        boolean hasName = name != null && !name.isEmpty();
+        boolean hasUuid = uuid != null && !uuid.isEmpty();
+
+        if (!hasName && !hasUuid) {
             return null;
         }
+
         for (P player : getPlayers()) {
-            UUID playerUuid = getPlayerUUID(player);
-            if (playerUuid != null && playerUuid.toString().equals(uuid)) {
-                return player;
-            }
-            String playerName = getPlayerName(player);
-            if (playerName != null && playerName.equals(name)) {
-                return player;
+            if (hasUuid) {
+                UUID playerUuid = getPlayerUUID(player);
+                if (playerUuid != null && playerUuid.toString().equals(uuid)) {
+                    return player;
+                }
+            } else {
+                String playerName = getPlayerName(player);
+                if (playerName != null && playerName.equals(name)) {
+                    return player;
+                }
             }
         }
+
         return null;
     }
 
@@ -285,7 +284,7 @@ public abstract class AbstractPlatformContext<S, C, P, CS> {
      * @param uuid     目标玩家 UUID，可为 null
      * @param json     消息内容，JSON 格式
      * @return 未找到玩家时为 {@link PlatformResultCode#PLAYER_NOT_FOUND}；
-     *         发送失败时透传发送结果码；成功时 data 为目标玩家快照
+     * 发送失败时透传发送结果码；成功时 data 为目标玩家快照
      */
     public final PlatformResult<PlayerModel> sendPrivateMessage(String nickname, UUID uuid, JsonElement json) {
         P player = findPlayer(nickname, uuid == null ? null : uuid.toString());
@@ -299,31 +298,5 @@ public abstract class AbstractPlatformContext<S, C, P, CS> {
         }
 
         return PlatformResult.success(new PlayerModel(getPlayerName(player), getPlayerUUID(player)));
-    }
-
-    /**
-     * 判断命令源是否具有指定权限
-     *
-     * <p>入参为 {@link Object}：core 的命令层全程以 {@code Object} 传递命令源，
-     * 真实类型由平台实现侧负责转换。
-     *
-     * @param source     命令源
-     * @param permission 权限节点
-     * @return 是否具有权限
-     */
-    @SuppressWarnings("unchecked")
-    public final boolean checkPermission(Object source, String permission) {
-        return doCheckPermission((CS) source, permission);
-    }
-
-    /**
-     * 向命令源回执 JSON 组件
-     *
-     * @param source      命令源
-     * @param jsonElement JSON 组件
-     */
-    public final void returnCallBackMessage(CS source, JsonElement jsonElement) {
-        C component = jsonToComponent(jsonElement);
-        returnCallBackMessage(source, component);
     }
 }

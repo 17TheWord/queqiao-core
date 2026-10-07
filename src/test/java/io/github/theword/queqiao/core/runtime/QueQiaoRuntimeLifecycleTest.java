@@ -6,6 +6,7 @@ import io.github.theword.queqiao.core.config.codec.StringCodec;
 import io.github.theword.queqiao.core.event.PlayerChatEvent;
 import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
 import io.github.theword.queqiao.core.protocol.handler.status.ServerStatusCollector;
+import io.github.theword.queqiao.core.platform.CommandSource;
 import io.github.theword.queqiao.core.support.PlatformStubs;
 import io.github.theword.queqiao.core.response.PrivateMessageResponse;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
@@ -64,7 +65,7 @@ class QueQiaoRuntimeLifecycleTest {
     /**
      * 空平台上下文：本用例只关心 Runtime 的生命周期，不需要平台行为
      */
-    private static final AbstractPlatformContext<?, ?, ?, ?> NOOP_PLATFORM_CONTEXT =
+    private static final AbstractPlatformContext<?, ?, ?> NOOP_PLATFORM_CONTEXT =
             PlatformStubs.noopPlatformContext();
 
     private QueQiaoRuntime runtime;
@@ -252,17 +253,17 @@ class QueQiaoRuntimeLifecycleTest {
             QueQiaoRuntime created = newRuntime();
 
             // NEW
-            assertThrows(IllegalStateException.class, () -> created.reload(null));
+            assertThrows(IllegalStateException.class, () -> created.reload(CommandSource.NONE));
             assertEquals(RuntimeState.NEW, created.getState(), "被拒的 reload 不应改变状态");
 
             // RUNNING
             created.start();
-            created.reload(null);
+            created.reload(CommandSource.NONE);
             assertEquals(RuntimeState.RUNNING, created.getState(), "reload 不应改变状态");
 
             // STOPPED
             created.shutdown();
-            assertThrows(IllegalStateException.class, () -> created.reload(null));
+            assertThrows(IllegalStateException.class, () -> created.reload(CommandSource.NONE));
             assertEquals(RuntimeState.STOPPED, created.getState(), "被拒的 reload 不应改变状态");
         }
     }

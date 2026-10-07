@@ -46,7 +46,7 @@ class QueQiaoRuntimeIsolationTest {
     /**
      * 空平台上下文：不实现任何行为，仅用于验证 Runtime 自身的状态隔离
      */
-    private static final AbstractPlatformContext<?, ?, ?, ?> NOOP_PLATFORM_CONTEXT =
+    private static final AbstractPlatformContext<?, ?, ?> NOOP_PLATFORM_CONTEXT =
             PlatformStubs.noopPlatformContext();
 
     private static QueQiaoRuntime newRuntime() {

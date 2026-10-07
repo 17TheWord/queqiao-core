@@ -137,7 +137,7 @@ class DefaultApisTest {
     @Test
     @DisplayName("所有 Api 都拒绝 null logger（由基类统一校验）")
     void everyApiRejectsNullLogger() {
-        AbstractPlatformContext<?, ?, ?, ?> platform = PlatformStubs.noopPlatformContext();
+        AbstractPlatformContext<?, ?, ?> platform = PlatformStubs.noopPlatformContext();
 
         assertThrows(NullPointerException.class, () -> new BroadcastApi(null, platform));
         assertThrows(NullPointerException.class, () -> new SendTitleApi(null, platform));

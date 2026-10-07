@@ -1,15 +1,15 @@
 package io.github.theword.queqiao.core.command.subCommand.client;
 
 import io.github.theword.queqiao.core.command.SubCommand;
-import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
+import io.github.theword.queqiao.core.platform.CommandSource;
 import org.slf4j.Logger;
 
 import java.util.List;
 
 public class ReconnectAllCommand extends SubCommand {
 
-    public ReconnectAllCommand(AbstractPlatformContext<?, ?, ?, ?> platformContext, Logger logger) {
-        super(platformContext, logger);
+    public ReconnectAllCommand(Logger logger) {
+        super(logger);
     }
 
     /**
@@ -38,14 +38,14 @@ public class ReconnectAllCommand extends SubCommand {
      * <p>重连业务逻辑由父命令 {@link ReconnectCommand} 持有（它才有 Manager 依赖），
      * 本命令只负责以 {@code all = true} 触发它。
      *
-     * @param commandReturner 命令执行者
+     * @param source 命令来源
      * @param args            命令参数
      */
     @Override
-    protected void onExecute(Object commandReturner, List<String> args) {
+    protected void onExecute(CommandSource source, List<String> args) {
         SubCommand parent = getParent();
         if (parent instanceof ReconnectCommand) {
-            ((ReconnectCommand) parent).reconnect(commandReturner, true);
+            ((ReconnectCommand) parent).reconnect(source, true);
             return;
         }
         logger.warn("ReconnectAllCommand 未挂载到 ReconnectCommand 之下，本次执行已忽略");

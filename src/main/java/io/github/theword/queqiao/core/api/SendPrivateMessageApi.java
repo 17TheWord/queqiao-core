@@ -29,7 +29,7 @@ import org.slf4j.Logger;
  */
 public final class SendPrivateMessageApi extends PlatformApi<PrivateMessagePayload, PrivateMessageResponse> {
 
-    public SendPrivateMessageApi(Logger logger, AbstractPlatformContext<?, ?, ?, ?> platform) {
+    public SendPrivateMessageApi(Logger logger, AbstractPlatformContext<?, ?, ?> platform) {
         super(PrivateMessagePayload.class, logger, platform);
     }
 

@@ -55,7 +55,7 @@ public final class DefaultApis {
      * @return 可变的 API 列表，调用方可自由增删
      */
     public static List<Api<?, ?>> all(
-            AbstractPlatformContext<?, ?, ?, ?> platformContext,
+            AbstractPlatformContext<?, ?, ?> platformContext,
             ServerStatusCollector serverStatusCollector,
             RconCommandExecutor rconCommandExecutor,
             Logger logger

@@ -17,7 +17,7 @@ import org.slf4j.Logger;
  */
 public final class SendActionBarApi extends PlatformApi<MessagePayload, Void> {
 
-    public SendActionBarApi(Logger logger, AbstractPlatformContext<?, ?, ?, ?> platform) {
+    public SendActionBarApi(Logger logger, AbstractPlatformContext<?, ?, ?> platform) {
         super(MessagePayload.class, logger, platform);
     }
 

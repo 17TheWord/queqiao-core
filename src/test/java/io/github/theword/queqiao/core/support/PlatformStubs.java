@@ -11,7 +11,6 @@ import io.github.theword.queqiao.core.handle.HandleProtocolMessage;
 import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
 import io.github.theword.queqiao.core.platform.PlatformResult;
 import io.github.theword.queqiao.core.platform.PlatformResultCode;
-import io.github.theword.queqiao.core.platform.TestCommandSource;
 import io.github.theword.queqiao.core.platform.TestComponent;
 import io.github.theword.queqiao.core.platform.TestPlayer;
 import io.github.theword.queqiao.core.platform.TestServer;
@@ -43,7 +42,7 @@ public final class PlatformStubs {
     /**
      * 不做任何事、不记录任何内容的平台上下文
      */
-    public static AbstractPlatformContext<?, ?, ?, ?> noopPlatformContext() {
+    public static AbstractPlatformContext<?, ?, ?> noopPlatformContext() {
         return new RecordingPlatformContext();
     }
 
@@ -119,7 +118,7 @@ public final class PlatformStubs {
      */
     public static HandleProtocolMessage newDispatcher(
             Logger logger, Gson gson,
-            AbstractPlatformContext<?, ?, ?, ?> platformContext,
+            AbstractPlatformContext<?, ?, ?> platformContext,
             RconCommandExecutor rconCommandExecutor) {
         ServerStatusCollector statusCollector = newStatusCollector(logger);
         List<Api<?, ?>> apis = DefaultApis.all(platformContext, statusCollector, rconCommandExecutor, logger);
@@ -136,7 +135,7 @@ public final class PlatformStubs {
      * 以便私聊成功路径能被验证（{@code findPlayer} 依赖 {@code getPlayers()}）。
      */
     public static final class RecordingPlatformContext
-            extends AbstractPlatformContext<TestServer, TestComponent, TestPlayer, TestCommandSource> {
+            extends AbstractPlatformContext<TestServer, TestComponent, TestPlayer> {
 
         private static final String DEFAULT_SERVER_TYPE = ServerTypeConstant.SPIGOT;
         private static final String DEFAULT_SERVER_VERSION = "1.20.1";
@@ -145,10 +144,7 @@ public final class PlatformStubs {
         private final List<String> actionBars = Collections.synchronizedList(new ArrayList<>());
         private final List<String> titleCalls = Collections.synchronizedList(new ArrayList<>());
         private final List<String> privateMessages = Collections.synchronizedList(new ArrayList<>());
-        private final List<String> returnMessages = Collections.synchronizedList(new ArrayList<>());
         private final List<TestPlayer> players = Collections.synchronizedList(new ArrayList<>());
-
-        private volatile boolean permissionGranted = true;
 
         /**
          * 平台是否支持标题；false 时 {@code sendTitleComponent} 交回基类默认实现（UNSUPPORTED）
@@ -214,12 +210,12 @@ public final class PlatformStubs {
         }
 
         @Override
-        public PlatformResult<String> broadcast(TestComponent component) {
+        public PlatformResult<Void> broadcast(TestComponent component) {
             if (broadcastFailure != null) {
                 return PlatformResult.failure(broadcastFailure, "forced broadcast failure");
             }
             broadcasts.add(component.getJson());
-            return PlatformResult.success(component.getJson());
+            return PlatformResult.success(null);
         }
 
         @Override
@@ -231,16 +227,6 @@ public final class PlatformStubs {
                     + ", uuid=" + player.getUuid()
                     + ", message=" + component.getJson());
             return PlatformResult.success(null);
-        }
-
-        @Override
-        public boolean doCheckPermission(TestCommandSource source, String permission) {
-            return permissionGranted;
-        }
-
-        @Override
-        public void returnCallBackMessage(TestCommandSource source, TestComponent component) {
-            returnMessages.add(component.getJson());
         }
 
         // ---- 可选原语：测试桩全部支持，以便验证成功路径 ----
@@ -279,13 +265,6 @@ public final class PlatformStubs {
          */
         public void addPlayer(String name, UUID uuid) {
             players.add(new TestPlayer(name, uuid));
-        }
-
-        /**
-         * 设置权限检查结果
-         */
-        public void setPermissionGranted(boolean granted) {
-            this.permissionGranted = granted;
         }
 
         /**
@@ -343,12 +322,6 @@ public final class PlatformStubs {
             }
         }
 
-        public List<String> getReturnMessages() {
-            synchronized (returnMessages) {
-                return new ArrayList<>(returnMessages);
-            }
-        }
-
         /**
          * 清空全部录制内容（便于用例之间复用同一个上下文实例）
          */
@@ -357,7 +330,6 @@ public final class PlatformStubs {
             actionBars.clear();
             titleCalls.clear();
             privateMessages.clear();
-            returnMessages.clear();
         }
     }
 }

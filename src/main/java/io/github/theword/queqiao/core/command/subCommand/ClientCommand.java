@@ -4,21 +4,20 @@ import io.github.theword.queqiao.core.command.SubCommand;
 import io.github.theword.queqiao.core.command.subCommand.client.ListCommand;
 import io.github.theword.queqiao.core.command.subCommand.client.ReconnectCommand;
 import io.github.theword.queqiao.core.config.Config;
-import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
+import io.github.theword.queqiao.core.platform.CommandSource;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
 import org.slf4j.Logger;
 
 public class ClientCommand extends SubCommand {
 
     public ClientCommand(
-            AbstractPlatformContext<?, ?, ?, ?> platformContext,
             Logger logger,
             Config config,
             WebsocketManager websocketManager) {
-        super(platformContext, logger);
+        super(logger);
         // 注册子命令
-        addChild(new ListCommand(platformContext, logger, config, websocketManager));
-        addChild(new ReconnectCommand(platformContext, logger, websocketManager));
+        addChild(new ListCommand(logger, config, websocketManager));
+        addChild(new ReconnectCommand(logger, websocketManager));
     }
 
     /**
@@ -47,11 +46,11 @@ public class ClientCommand extends SubCommand {
      *
      * <p>Pass
      *
-     * @param commandReturner 命令执行者
+     * @param source 命令来源
      * @param args            命令参数
      */
     @Override
-    protected void onExecute(Object commandReturner, java.util.List<String> args) {
-        sendCommandTree(commandReturner, this);
+    protected void onExecute(CommandSource source, java.util.List<String> args) {
+        sendCommandTree(source, this);
     }
 }

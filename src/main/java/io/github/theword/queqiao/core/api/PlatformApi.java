@@ -40,7 +40,7 @@ public abstract class PlatformApi<P, R> extends Api<P, R> {
      *
      * <p>由创建方注入，构造时即校验非 null，因此子类可以直接使用而不必再判空。
      */
-    protected final AbstractPlatformContext<?, ?, ?, ?> platform;
+    protected final AbstractPlatformContext<?, ?, ?> platform;
 
     /**
      * @param payloadType 负载类型，不得为 null
@@ -50,7 +50,7 @@ public abstract class PlatformApi<P, R> extends Api<P, R> {
     protected PlatformApi(
             Class<P> payloadType,
             Logger logger,
-            AbstractPlatformContext<?, ?, ?, ?> platform) {
+            AbstractPlatformContext<?, ?, ?> platform) {
         super(payloadType, logger);
         this.platform = Objects.requireNonNull(platform, "platform");
     }

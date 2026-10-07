@@ -6,7 +6,7 @@ import io.github.theword.queqiao.core.command.subCommand.ReloadCommand;
 import io.github.theword.queqiao.core.command.subCommand.ServerCommand;
 import io.github.theword.queqiao.core.config.Config;
 import io.github.theword.queqiao.core.constant.BaseConstant;
-import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
+import io.github.theword.queqiao.core.platform.CommandSource;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
 import org.slf4j.Logger;
 
@@ -34,19 +34,18 @@ public class RootCommand extends SubCommand {
      * @param logger               日志实现，不得为 null
      * @param config               配置运行时状态，不得为 null
      * @param websocketManager     WebSocket 管理器（须在 Runtime.start() 之后获取），不得为 null
-     * @param reloadAction         触发 Runtime 重载的动作，入参为命令执行者，不得为 null
+     * @param reloadAction         触发 Runtime 重载的动作，入参为命令来源，不得为 null
      */
     public RootCommand(
-            AbstractPlatformContext<?, ?, ?, ?> platformContext,
             Logger logger,
             Config config,
             WebsocketManager websocketManager,
-            Consumer<Object> reloadAction) {
-        super(platformContext, logger);
-        addChild(new HelpCommand(platformContext, logger));
-        addChild(new ReloadCommand(platformContext, logger, reloadAction));
-        addChild(new ServerCommand(platformContext, logger, config, websocketManager));
-        addChild(new ClientCommand(platformContext, logger, config, websocketManager));
+            Consumer<CommandSource> reloadAction) {
+        super(logger);
+        addChild(new HelpCommand(logger));
+        addChild(new ReloadCommand(logger, reloadAction));
+        addChild(new ServerCommand(logger, config, websocketManager));
+        addChild(new ClientCommand(logger, config, websocketManager));
     }
 
     /**
@@ -72,13 +71,12 @@ public class RootCommand extends SubCommand {
     /**
      * 执行命令
      *
-     * @param commandReturner 命令执行者
+     * @param source 命令来源
      * @param args            命令参数
      */
     @Override
-    protected void onExecute(Object commandReturner, List<String> args) {
-        platformContext.returnCallBackMessage(
-                commandReturner, "请使用帮助命令查看可用子命令：" + BaseConstant.COMMAND_HEADER + " help"
+    protected void onExecute(CommandSource source, List<String> args) {
+        source.reply("请使用帮助命令查看可用子命令：" + BaseConstant.COMMAND_HEADER + " help"
         );
     }
 }

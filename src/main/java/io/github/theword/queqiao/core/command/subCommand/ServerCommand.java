@@ -3,7 +3,7 @@ package io.github.theword.queqiao.core.command.subCommand;
 import io.github.theword.queqiao.core.command.SubCommand;
 import io.github.theword.queqiao.core.command.subCommand.server.InfoCommand;
 import io.github.theword.queqiao.core.config.Config;
-import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
+import io.github.theword.queqiao.core.platform.CommandSource;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
 import org.slf4j.Logger;
 
@@ -12,12 +12,11 @@ import java.util.List;
 public class ServerCommand extends SubCommand {
 
     public ServerCommand(
-            AbstractPlatformContext<?, ?, ?, ?> platformContext,
             Logger logger,
             Config config,
             WebsocketManager websocketManager) {
-        super(platformContext, logger);
-        addChild(new InfoCommand(platformContext, logger, config, websocketManager));
+        super(logger);
+        addChild(new InfoCommand(logger, config, websocketManager));
     }
 
     /**
@@ -46,11 +45,11 @@ public class ServerCommand extends SubCommand {
      *
      * <p>位于本命令 pass
      *
-     * @param commandReturner 命令执行者
+     * @param source 命令来源
      * @param args            命令参数
      */
     @Override
-    protected void onExecute(Object commandReturner, List<String> args) {
-        sendCommandTree(commandReturner, this);
+    protected void onExecute(CommandSource source, List<String> args) {
+        sendCommandTree(source, this);
     }
 }

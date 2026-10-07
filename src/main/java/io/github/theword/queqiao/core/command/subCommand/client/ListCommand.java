@@ -3,7 +3,7 @@ package io.github.theword.queqiao.core.command.subCommand.client;
 import io.github.theword.queqiao.core.command.SubCommand;
 import io.github.theword.queqiao.core.config.ConfigKeys;
 import io.github.theword.queqiao.core.config.Config;
-import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
+import io.github.theword.queqiao.core.platform.CommandSource;
 import io.github.theword.queqiao.core.utils.Tool;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
 import io.github.theword.queqiao.core.websocket.WsClient;
@@ -26,11 +26,10 @@ public class ListCommand extends SubCommand {
     private final WebsocketManager websocketManager;
 
     public ListCommand(
-            AbstractPlatformContext<?, ?, ?, ?> platformContext,
             Logger logger,
             Config config,
             WebsocketManager websocketManager) {
-        super(platformContext, logger);
+        super(logger);
         this.config = Objects.requireNonNull(config, "config");
         this.websocketManager = Objects.requireNonNull(
                 websocketManager, "websocketManager 不能为 null：命令树须在 Runtime.start() 之后构建");
@@ -68,35 +67,29 @@ public class ListCommand extends SubCommand {
      *         而"已启用"分支用 {@code i}（从 0 起），同一条命令的编号规则随配置变化</li>
      * </ol>
      *
-     * @param commandReturner 命令执行者
+     * @param source 命令来源
      * @param args            命令参数
      * @since 0.1.5
      */
     @Override
-    protected void onExecute(Object commandReturner, List<String> args) {
+    protected void onExecute(CommandSource source, List<String> args) {
         if (!config.get(ConfigKeys.WebSocketClient.ENABLE)) {
             List<String> urlList = new ArrayList<>(config.get(ConfigKeys.WebSocketClient.URL_LIST));
-            platformContext.returnCallBackMessage(
-                    commandReturner, "Websocket Client 配置项未启用，如需开启，请在 config.yml 中启用 WebsocketClient 配置项");
-            platformContext.returnCallBackMessage(
-                    commandReturner, Tool.format("配置文件中连接列表如下共 {} 个 Client", urlList.size()));
+            source.reply("Websocket Client 配置项未启用，如需开启，请在 config.yml 中启用 WebsocketClient 配置项");
+            source.reply(Tool.format("配置文件中连接列表如下共 {} 个 Client", urlList.size()));
             for (int i = 0; i < urlList.size(); i++) {
-                platformContext.returnCallBackMessage(
-                        commandReturner, Tool.format("{} 连接至 {}", i + 1, urlList.get(i)));
+                source.reply(Tool.format("{} 连接至 {}", i + 1, urlList.get(i)));
             }
             return;
         }
 
         List<WsClient> wsClientList = websocketManager.getWsClientList();
 
-        platformContext.returnCallBackMessage(
-                commandReturner, Tool.format("Websocket Client 列表，共 {} 个 Client", wsClientList.size()));
+        source.reply(Tool.format("Websocket Client 列表，共 {} 个 Client", wsClientList.size()));
 
         for (int i = 0; i < wsClientList.size(); i++) {
             WsClient wsClient = wsClientList.get(i);
-            platformContext.returnCallBackMessage(
-                    commandReturner,
-                    Tool.format(
+            source.reply(Tool.format(
                             "{} 连接至 {} 的 Client，状态：{}",
                             i + 1,
                             wsClient.getURI(),

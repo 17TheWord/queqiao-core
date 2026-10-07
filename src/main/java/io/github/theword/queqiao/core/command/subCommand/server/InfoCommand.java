@@ -3,7 +3,7 @@ package io.github.theword.queqiao.core.command.subCommand.server;
 import io.github.theword.queqiao.core.command.SubCommand;
 import io.github.theword.queqiao.core.config.ConfigKeys;
 import io.github.theword.queqiao.core.config.Config;
-import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
+import io.github.theword.queqiao.core.platform.CommandSource;
 import io.github.theword.queqiao.core.utils.Tool;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
 import io.github.theword.queqiao.core.websocket.WsServer;
@@ -28,11 +28,10 @@ public class InfoCommand extends SubCommand {
     private final WebsocketManager websocketManager;
 
     public InfoCommand(
-            AbstractPlatformContext<?, ?, ?, ?> platformContext,
             Logger logger,
             Config config,
             WebsocketManager websocketManager) {
-        super(platformContext, logger);
+        super(logger);
         this.config = Objects.requireNonNull(config, "config");
         this.websocketManager = Objects.requireNonNull(
                 websocketManager, "websocketManager 不能为 null：命令树须在 Runtime.start() 之后构建");
@@ -65,28 +64,24 @@ public class InfoCommand extends SubCommand {
      * （判空 / 取数量 / 遍历），三次之间集合可能变化，
      * 会出现"显示 N 个连接、却列出 M 条"的自相矛盾输出。
      *
-     * @param commandReturner 命令执行者
+     * @param source 命令来源
      * @param args            命令参数
      */
     @Override
-    protected void onExecute(Object commandReturner, List<String> args) {
+    protected void onExecute(CommandSource source, List<String> args) {
         if (!config.get(ConfigKeys.WebSocket.ENABLE)) {
-            platformContext.returnCallBackMessage(
-                    commandReturner, "Websocket Server 配置项未启用，如需开启，请在 config.yml 中启用 WebsocketServer 配置项");
-            platformContext.returnCallBackMessage(
-                    commandReturner, Tool.format("配置项中地址为 {}:{}", config.get(ConfigKeys.WebSocket.HOST), config.get(ConfigKeys.WebSocket.PORT)));
+            source.reply("Websocket Server 配置项未启用，如需开启，请在 config.yml 中启用 WebsocketServer 配置项");
+            source.reply(Tool.format("配置项中地址为 {}:{}", config.get(ConfigKeys.WebSocket.HOST), config.get(ConfigKeys.WebSocket.PORT)));
             return;
         }
 
         WsServer wsServer = websocketManager.getWsServer();
         if (wsServer == null) {
-            platformContext.returnCallBackMessage(commandReturner, "Websocket Server 为 null，查询失败");
+            source.reply("Websocket Server 为 null，查询失败");
             return;
         }
 
-        platformContext.returnCallBackMessage(
-                commandReturner,
-                Tool.format(
+        source.reply(Tool.format(
                         "当前 Websocket Server 已开启，监听地址为 {}:{}",
                         wsServer.getAddress().getHostString(),
                         wsServer.getPort()));
@@ -94,23 +89,20 @@ public class InfoCommand extends SubCommand {
         // 取一次快照后统一使用，避免三次读取之间集合变化导致输出自相矛盾
         List<WebSocket> connections = new ArrayList<>(wsServer.getConnections());
         if (connections.isEmpty()) {
-            platformContext.returnCallBackMessage(commandReturner, "当前暂无 Websocket 连接到该 Server");
+            source.reply("当前暂无 Websocket 连接到该 Server");
             return;
         }
 
-        platformContext.returnCallBackMessage(
-                commandReturner, Tool.format("当前 Websocket Server 已有 {} 个连接", connections.size()));
+        source.reply(Tool.format("当前 Websocket Server 已有 {} 个连接", connections.size()));
 
         int count = 0;
         for (WebSocket webSocket : connections) {
             count++;
             InetSocketAddress remoteAddress = webSocket.getRemoteSocketAddress();
             if (remoteAddress == null) {
-                platformContext.returnCallBackMessage(commandReturner, Tool.format("{} 来自未知地址的连接", count));
+                source.reply(Tool.format("{} 来自未知地址的连接", count));
             } else {
-                platformContext.returnCallBackMessage(
-                        commandReturner,
-                        Tool.format("{} 来自 {}:{} 的连接", count, remoteAddress.getHostString(), remoteAddress.getPort()));
+                source.reply(Tool.format("{} 来自 {}:{} 的连接", count, remoteAddress.getHostString(), remoteAddress.getPort()));
             }
         }
     }

@@ -4,7 +4,7 @@ import io.github.theword.queqiao.core.config.ConfigKeys;
 import io.github.theword.queqiao.core.config.Config;
 import io.github.theword.queqiao.core.constant.WebsocketConstantMessage;
 import io.github.theword.queqiao.core.event.base.BaseEvent;
-import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
+import io.github.theword.queqiao.core.platform.CommandSource;
 import io.github.theword.queqiao.core.handle.HandleProtocolMessage;
 import io.github.theword.queqiao.core.websocket.ReconnectPolicy;
 import io.github.theword.queqiao.core.websocket.WebSocketUrlNormalizer;
@@ -37,7 +37,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * </pre>
  *
  * <p>调度器在构造阶段创建（{@link ScheduledThreadPoolExecutor} 的 core 线程在首次提交任务时才启动，
- * 因此即使未启用 Client 也无实际线程开销），只在 {@link #stop(int, String, Object)} 这一永久销毁路径
+ * 因此即使未启用 Client 也无实际线程开销），只在 {@link #stop(int, String, CommandSource)} 这一永久销毁路径
  * 关闭；{@code stopClients()} / {@code restartClients()} 绝不触碰它。
  *
  * @since 0.6.11
@@ -68,7 +68,6 @@ public class WebsocketManager {
     private volatile WsServer wsServer;
     private final Logger logger;
     private final Gson gson;
-    private final AbstractPlatformContext<?, ?, ?, ?> platformContext;
 
     /**
      * 协议分发入口，由 QueQiaoRuntime 创建并注入
@@ -81,7 +80,7 @@ public class WebsocketManager {
     /**
      * 当前配置快照
      *
-     * <p>由 {@code QueQiaoRuntime} 注入；reload 时通过 {@link #restart(Config, Object)} 整体替换。
+     * <p>由 {@code QueQiaoRuntime} 注入；reload 时通过 {@link #restart(Config, CommandSource)} 整体替换。
      * 标记 {@code volatile}：reload 线程写入，WebSocket 读写线程与游戏线程读取。
      *
      * <p>配置与 Runtime 作用域辅助能力均由外部注入，
@@ -103,12 +102,12 @@ public class WebsocketManager {
     private final ScheduledThreadPoolExecutor reconnectScheduler;
 
     /**
-     * 是否已启动（保证 {@link #start(Object)} 幂等）
+     * 是否已启动（保证 {@link #start(CommandSource)} 幂等）
      */
     private boolean started = false;
 
     /**
-     * 是否已永久销毁（保证 {@link #stop(int, String, Object)} 幂等）
+     * 是否已永久销毁（保证 {@link #stop(int, String, CommandSource)} 幂等）
      */
     private boolean destroyed = false;
 
@@ -117,7 +116,6 @@ public class WebsocketManager {
      *
      * @param logger                          日志实现
      * @param gson                            Gson 实例
-     * @param platformContext                 平台上下文
      * @param handleProtocolMessage           协议分发入口（由 QueQiaoRuntime 创建并注入）
      * @param config                          配置快照（由 QueQiaoRuntime 注入）
      * @param utils                           Runtime 作用域辅助能力（由 QueQiaoRuntime 注入）
@@ -125,7 +123,6 @@ public class WebsocketManager {
     public WebsocketManager(
                     Logger logger,
                     Gson gson,
-                    AbstractPlatformContext<?, ?, ?, ?> platformContext,
                     HandleProtocolMessage handleProtocolMessage,
                     Config config,
                     RuntimeUtils utils) {
@@ -134,7 +131,6 @@ public class WebsocketManager {
         this.utils = Objects.requireNonNull(utils, "utils");
         // 内部不变量：这些依赖由 QueQiaoRuntime 注入，为 null 属接线缺陷。
         // 快速失败，避免在 stop() 中途（客户端已全部停止、调度器尚未关闭）才抛 NPE。
-        this.platformContext = Objects.requireNonNull(platformContext, "platformContext");
         this.handleProtocolMessage = Objects.requireNonNull(handleProtocolMessage, "handleProtocolMessage");
         this.config = Objects.requireNonNull(config, "config");
         this.wsClientList = new ArrayList<>();
@@ -185,18 +181,17 @@ public class WebsocketManager {
      *
      * <p>每个 URL 独立启动：单个 endpoint 失败不得阻断其它 endpoint。
      *
-     * @param commandReturner 命令执行者，可为 null
+     * @param source 命令来源；无实际命令来源时使用 CommandSource.NONE
      */
-    private void startClients(Object commandReturner) {
-        this.platformContext.returnCallBackMessage(commandReturner, WebsocketConstantMessage.Client.LAUNCHING);
+    private void startClients(CommandSource source) {
+        source.reply(WebsocketConstantMessage.Client.LAUNCHING);
 
         WebSocketUrlNormalizer.Result normalized =
                 WebSocketUrlNormalizer.normalize(this.config.get(ConfigKeys.WebSocketClient.URL_LIST));
 
         for (String rejectedUrl : normalized.getRejected()) {
             this.logger.warn("WebSocket URL scheme 不受支持（仅支持 ws:// 与 wss://），已跳过：{}", rejectedUrl);
-            this.platformContext.returnCallBackMessage(
-                    commandReturner, buildUriErrorMessage(rejectedUrl));
+            source.reply(buildUriErrorMessage(rejectedUrl));
         }
 
         ReconnectPolicy reconnectPolicy = new ReconnectPolicy(
@@ -207,7 +202,7 @@ public class WebsocketManager {
         }
 
         for (String websocketUrl : normalized.getAccepted()) {
-            startClient(websocketUrl, reconnectPolicy, commandReturner);
+            startClient(websocketUrl, reconnectPolicy, source);
         }
     }
 
@@ -216,9 +211,9 @@ public class WebsocketManager {
      *
      * @param websocketUrl    已归一化的 URL
      * @param reconnectPolicy 退避策略
-     * @param commandReturner 命令执行者，可为 null
+     * @param source 命令来源；无实际命令来源时使用 CommandSource.NONE
      */
-    private void startClient(String websocketUrl, ReconnectPolicy reconnectPolicy, Object commandReturner) {
+    private void startClient(String websocketUrl, ReconnectPolicy reconnectPolicy, CommandSource source) {
         WsClient wsClient = null;
         try {
             URI uri = new URI(websocketUrl);
@@ -239,14 +234,12 @@ public class WebsocketManager {
         } catch (URISyntaxException e) {
             discardFailedClient(wsClient);
             this.logger.warn("WebSocket URL 格式错误，无法连接：{}", WebSocketUrlNormalizer.sanitizeForLog(websocketUrl));
-            this.platformContext.returnCallBackMessage(
-                    commandReturner, buildUriErrorMessage(websocketUrl));
+            source.reply(buildUriErrorMessage(websocketUrl));
         } catch (RuntimeException e) {
             discardFailedClient(wsClient);
             this.logger.warn(
                     "WebSocket 客户端启动失败，url={}，error={}", WebSocketUrlNormalizer.sanitizeForLog(websocketUrl), e.getMessage());
-            this.platformContext.returnCallBackMessage(
-                    commandReturner, buildUriErrorMessage(websocketUrl));
+            source.reply(buildUriErrorMessage(websocketUrl));
         }
     }
 
@@ -291,17 +284,15 @@ public class WebsocketManager {
      *
      * @param code            关闭码
      * @param reason          关闭原因（纯文本，不作为格式模板使用）
-     * @param commandReturner 命令执行者，可为 null
+     * @param source 命令来源；无实际命令来源时使用 CommandSource.NONE
      */
-    private void stopClients(int code, String reason, Object commandReturner) {
+    private void stopClients(int code, String reason, CommandSource source) {
         for (WsClient wsClient : wsClientList) {
             wsClient.stopWithoutReconnect(code, reason);
-            this.platformContext.returnCallBackMessage(
-                    commandReturner,
-                    Tool.format(WebsocketConstantMessage.Client.CLOSING_CONNECTION, wsClient.getURI(), code, reason));
+            source.reply(Tool.format(WebsocketConstantMessage.Client.CLOSING_CONNECTION, wsClient.getURI(), code, reason));
         }
         wsClientList.clear();
-        this.platformContext.returnCallBackMessage(commandReturner, WebsocketConstantMessage.Client.CLEAR_WEBSOCKET_CLIENT_LIST);
+        source.reply(WebsocketConstantMessage.Client.CLEAR_WEBSOCKET_CLIENT_LIST);
     }
 
     /**
@@ -316,18 +307,18 @@ public class WebsocketManager {
      * 保留它会让系统停在"用旧配置运行、却声称已重载完成"的状态，比
      * "部分启动 + 明确日志"更难排查；实现回滚还需双份连接共存与原子切换，复杂度与收益不成比例。
      *
-     * @param commandReturner 命令执行者，可为 null
+     * @param source 命令来源；无实际命令来源时使用 CommandSource.NONE
      */
-    private void restartClients(Object commandReturner) {
-        this.platformContext.returnCallBackMessage(commandReturner, WebsocketConstantMessage.Client.RELOADING);
-        stopClients(CLOSE_CODE_NORMAL, WebsocketConstantMessage.CLOSE_BY_RELOAD, commandReturner);
+    private void restartClients(CommandSource source) {
+        source.reply(WebsocketConstantMessage.Client.RELOADING);
+        stopClients(CLOSE_CODE_NORMAL, WebsocketConstantMessage.CLOSE_BY_RELOAD, source);
         if (this.config.get(ConfigKeys.WebSocketClient.ENABLE)) {
-            startClients(commandReturner);
+            startClients(source);
         }
-        this.platformContext.returnCallBackMessage(commandReturner, WebsocketConstantMessage.Client.RELOADED);
+        source.reply(WebsocketConstantMessage.Client.RELOADED);
     }
 
-    private void startServer(Object commandReturner) {
+    private void startServer(CommandSource source) {
         WsServer server = new WsServer(
                 new InetSocketAddress(
                         this.config.get(ConfigKeys.WebSocket.HOST),
@@ -342,9 +333,7 @@ public class WebsocketManager {
         );
         wsServer = server;
         server.start();
-        this.platformContext.returnCallBackMessage(
-                commandReturner,
-                Tool.format(
+        source.reply(Tool.format(
                         WebsocketConstantMessage.Server.SERVER_STARTING,
                         this.config.get(ConfigKeys.WebSocket.HOST),
                         this.config.get(ConfigKeys.WebSocket.PORT)
@@ -361,25 +350,25 @@ public class WebsocketManager {
         }
     }
 
-    private void stopServer(Object commandReturner, String reason) {
+    private void stopServer(CommandSource source, String reason) {
         if (wsServer != null) {
             try {
                 wsServer.stop(0, reason);
-                this.platformContext.returnCallBackMessage(commandReturner, reason);
+                source.reply(reason);
             } catch (InterruptedException e) {
-                this.platformContext.returnCallBackMessage(commandReturner, WebsocketConstantMessage.Server.ERROR_ON_STOPPING);
+                source.reply(WebsocketConstantMessage.Server.ERROR_ON_STOPPING);
                 utils.debugLog(e.getMessage());
             }
             wsServer = null;
         }
     }
 
-    private void restartServer(Object commandReturner) {
-        stopServer(commandReturner, WebsocketConstantMessage.Server.RELOADING);
+    private void restartServer(CommandSource source) {
+        stopServer(source, WebsocketConstantMessage.Server.RELOADING);
         if (this.config.get(ConfigKeys.WebSocket.ENABLE)) {
-            startServer(commandReturner);
+            startServer(source);
         }
-        this.platformContext.returnCallBackMessage(commandReturner, WebsocketConstantMessage.Server.RELOADED);
+        source.reply(WebsocketConstantMessage.Server.RELOADED);
     }
 
     /**
@@ -387,9 +376,9 @@ public class WebsocketManager {
      *
      * <p>重复调用不会创建第二套 Client，也不会创建第二个调度器。
      *
-     * @param commandReturner 命令执行者，可为 null
+     * @param source 命令来源；无实际命令来源时使用 CommandSource.NONE
      */
-    public void start(Object commandReturner) {
+    public void start(CommandSource source) {
         synchronized (lifecycleLock) {
             if (destroyed) {
                 utils.debugLog("WebsocketManager 已销毁，忽略启动请求");
@@ -398,7 +387,7 @@ public class WebsocketManager {
             if (started) {
                 // Client 已启动时保持幂等；如果先前 Server 绑定失败，则允许单独重试 Server。
                 if (wsServer == null && this.config.get(ConfigKeys.WebSocket.ENABLE)) {
-                    startServer(commandReturner);
+                    startServer(source);
                 } else {
                     utils.debugLog("WebsocketManager 已启动，忽略重复启动");
                 }
@@ -406,10 +395,10 @@ public class WebsocketManager {
             }
             started = true;
             if (this.config.get(ConfigKeys.WebSocketClient.ENABLE)) {
-                startClients(commandReturner);
+                startClients(source);
             }
             if (this.config.get(ConfigKeys.WebSocket.ENABLE)) {
-                startServer(commandReturner);
+                startServer(source);
             }
         }
     }
@@ -421,9 +410,9 @@ public class WebsocketManager {
      *
      * @param code            关闭码
      * @param reason          关闭原因
-     * @param commandReturner 命令执行者，可为 null
+     * @param source 命令来源；无实际命令来源时使用 CommandSource.NONE
      */
-    public void stop(int code, String reason, Object commandReturner) {
+    public void stop(int code, String reason, CommandSource source) {
         synchronized (lifecycleLock) {
             if (destroyed) {
                 utils.debugLog("WebsocketManager 已销毁，忽略重复停止");
@@ -431,8 +420,8 @@ public class WebsocketManager {
             }
             destroyed = true;
             started = false;
-            stopClients(code, reason, commandReturner);
-            stopServer(commandReturner, reason);
+            stopClients(code, reason, source);
+            stopServer(source, reason);
             shutdownReconnectScheduler();
         }
     }
@@ -444,17 +433,17 @@ public class WebsocketManager {
      * 不允许 stop scheduler 后再复用已关闭的 scheduler。
      *
      * @param newConfig       新的配置快照（由 QueQiaoRuntime 在 reload 时加载）
-     * @param commandReturner 命令执行者，可为 null
+     * @param source 命令来源；无实际命令来源时使用 CommandSource.NONE
      */
-    public void restart(Config newConfig, Object commandReturner) {
+    public void restart(Config newConfig, CommandSource source) {
         synchronized (lifecycleLock) {
             if (destroyed) {
                 utils.debugLog("WebsocketManager 已销毁，忽略重载请求");
                 return;
             }
             this.config = Objects.requireNonNull(newConfig, "newConfig");
-            restartClients(commandReturner);
-            restartServer(commandReturner);
+            restartClients(source);
+            restartServer(source);
             started = true;
         }
     }

@@ -22,6 +22,7 @@ import io.github.theword.queqiao.core.exception.rcon.RconException;
 import io.github.theword.queqiao.core.handle.HandleProtocolMessage;
 import io.github.theword.queqiao.core.localize.LanguageService;
 import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
+import io.github.theword.queqiao.core.platform.CommandSource;
 import io.github.theword.queqiao.core.protocol.handler.status.ServerStatusCollector;
 import io.github.theword.queqiao.core.rcon.RconClient;
 import io.github.theword.queqiao.core.utils.GsonUtils;
@@ -141,7 +142,7 @@ public final class QueQiaoRuntime {
      */
     private volatile Logger logger;
 
-    public final AbstractPlatformContext<?, ?, ?, ?> platformContext;
+    public final AbstractPlatformContext<?, ?, ?> platformContext;
 
     private volatile WebsocketManager websocketManager;
 
@@ -156,7 +157,7 @@ public final class QueQiaoRuntime {
 
     private QueQiaoRuntime(
             Logger logger,
-            AbstractPlatformContext<?, ?, ?, ?> platformContext,
+            AbstractPlatformContext<?, ?, ?> platformContext,
             Consumer<List<Api<?, ?>>> apiConfigurer
     ) {
         this.logger = logger;
@@ -200,7 +201,7 @@ public final class QueQiaoRuntime {
      */
     public static QueQiaoRuntime create(
             Consumer<ConfigRegistry> configurer,
-            AbstractPlatformContext<?, ?, ?, ?> platformContext,
+            AbstractPlatformContext<?, ?, ?> platformContext,
             Consumer<List<Api<?, ?>>> apiConfigurer
     ) {
         Objects.requireNonNull(
@@ -368,9 +369,9 @@ public final class QueQiaoRuntime {
      * <p>注意：命令层在 Runtime 关闭后仍可能持有旧的命令树；此时触发 reload 会抛出
      * 上述异常，并由 {@code SubCommand.execute} 捕获后回显"命令执行出错"。
      *
-     * @param commandReturner 命令执行者，可为 null
+     * @param source 命令来源；无实际命令来源时使用 CommandSource.NONE
      */
-    public void reload(Object commandReturner) {
+    public void reload(CommandSource source) {
         synchronized (lifecycleLock) {
             if (state.get() != RuntimeState.RUNNING) {
                 throw new IllegalStateException("QueQiaoRuntime 当前状态不允许 reload: " + state.get());
@@ -386,11 +387,10 @@ public final class QueQiaoRuntime {
             serverStatusCollector.updateRefreshInterval(config.get(ConfigKeys.Status.REFRESH_INTERVAL_SECONDS));
             WebsocketManager manager = websocketManager;
             if (manager != null) {
-                manager.restart(config, commandReturner);
+                manager.restart(config, source);
             }
             restartRconClient();
-            // 空值守卫在 returnCallBackMessage 内部（命令源为 null 时直接返回）
-            platformContext.returnCallBackMessage(commandReturner, CommandConstant.RELOAD_CONFIG);
+            source.reply(CommandConstant.RELOAD_CONFIG);
         }
     }
 
@@ -442,7 +442,7 @@ public final class QueQiaoRuntime {
 
         WebsocketManager manager = websocketManager;
         if (manager != null) {
-            manager.stop(1000, WebsocketConstantMessage.SHUTDOWN, null);
+            manager.stop(1000, WebsocketConstantMessage.SHUTDOWN, CommandSource.NONE);
             websocketManager = null;
         }
 
@@ -482,8 +482,8 @@ public final class QueQiaoRuntime {
     }
 
     private void initWebsocketManager() {
-        websocketManager = new WebsocketManager(logger, gson, platformContext, handleProtocolMessage, config, utils);
-        websocketManager.start(null);
+        websocketManager = new WebsocketManager(logger, gson, handleProtocolMessage, config, utils);
+        websocketManager.start(CommandSource.NONE);
     }
 
     private void initRconClient() {

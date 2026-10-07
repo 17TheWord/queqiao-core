@@ -8,7 +8,7 @@ import com.google.gson.JsonElement;
 
 import io.github.theword.queqiao.core.constant.ServerTypeConstant;
 
-public class PlatformContext extends AbstractPlatformContext<TestServer, TestComponent, TestPlayer, TestCommandSource> {
+public class PlatformContext extends AbstractPlatformContext<TestServer, TestComponent, TestPlayer> {
 
     public PlatformContext(TestServer server) {
         super(server);
@@ -47,30 +47,15 @@ public class PlatformContext extends AbstractPlatformContext<TestServer, TestCom
     }
 
     @Override
-    public PlatformResult<String> broadcast(TestComponent component) {
+    public PlatformResult<Void> broadcast(TestComponent component) {
         server.broadcast(component);
-        // 只有平台认识自己的组件类型，因此渲染文本由平台提供
-        return PlatformResult.success(component.getJson());
+        return PlatformResult.success(null);
     }
 
     @Override
     public PlatformResult<Void> sendPrivateMessage(TestPlayer player, TestComponent component) {
         player.sendMessage(component);
         return PlatformResult.success(null);
-    }
-
-    @Override
-    public boolean doCheckPermission(TestCommandSource source, String permission) {
-        if (source instanceof TestPlayer) {
-            TestPlayer player = (TestPlayer) source;
-            return player.hasPermission("permission");
-        }
-        return false;
-    }
-
-    @Override
-    public void returnCallBackMessage(TestCommandSource source, TestComponent component) {
-        source.sendMessage(component);
     }
 
 }

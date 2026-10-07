@@ -5,8 +5,8 @@ import io.github.theword.queqiao.core.command.subCommand.client.ReconnectCommand
 import io.github.theword.queqiao.core.command.subCommand.server.InfoCommand;
 import io.github.theword.queqiao.core.constant.CommandConstant;
 import io.github.theword.queqiao.core.config.io.ConfigStore;
-import io.github.theword.queqiao.core.platform.TestCommandSource;
 import io.github.theword.queqiao.core.runtime.QueQiaoRuntime;
+import io.github.theword.queqiao.core.support.FakeCommandSource;
 import io.github.theword.queqiao.core.support.PlatformStubs;
 import org.java_websocket.client.WebSocketClient;
 import org.java_websocket.handshake.ServerHandshake;
@@ -62,7 +62,9 @@ class CommandLayerTest {
     private static final String SERVER_NAME = "TestServer";
 
     /**
-     * 记录型平台上下文：命令回执经 {@code returnCallBackMessage} 落到这里
+     * 记录型平台上下文：仅供 Runtime 构造使用。
+     *
+     * <p>命令回执已不再经过平台上下文——它走 {@link FakeCommandSource}。
      */
     private final PlatformStubs.RecordingPlatformContext PLATFORM =
             PlatformStubs.recordingPlatformContext();
@@ -114,10 +116,10 @@ class CommandLayerTest {
                         10_000L,
                         "服务端应登记 2 个连接");
 
-                PLATFORM.clearRecordings();
-                new InfoCommand(PLATFORM, LOGGER, runtime.getConfig(), runtime.getWebsocketManager())
-                        .execute(new TestCommandSource(), Collections.emptyList());
-                List<String> messages = PLATFORM.getReturnMessages();
+                FakeCommandSource source = new FakeCommandSource();
+                new InfoCommand(LOGGER, runtime.getConfig(), runtime.getWebsocketManager())
+                        .execute(source, Collections.emptyList());
+                List<String> messages = source.getReplies();
 
                 assertTrue(containsAny(messages, "已有 2 个连接"), "应报告 2 个连接，实际=" + messages);
                 assertTrue(containsAny(messages, "1 来自"), "应有第 1 条连接明细，实际=" + messages);
@@ -143,10 +145,10 @@ class CommandLayerTest {
         try (ConfigFixture ignored = new ConfigFixture(serverPort, deadPort)) {
             startRuntime();
 
-            PLATFORM.clearRecordings();
-            new ListCommand(PLATFORM, LOGGER, runtime.getConfig(), runtime.getWebsocketManager())
-                    .execute(new TestCommandSource(), Collections.emptyList());
-            List<String> messages = PLATFORM.getReturnMessages();
+            FakeCommandSource source = new FakeCommandSource();
+            new ListCommand(LOGGER, runtime.getConfig(), runtime.getWebsocketManager())
+                    .execute(source, Collections.emptyList());
+            List<String> messages = source.getReplies();
 
             assertTrue(containsAny(messages, "共 2 个 Client"), "应报告 2 个 Client，实际=" + messages);
             assertTrue(containsAny(messages, "1 连接至"), "编号应从 1 开始，实际=" + messages);
@@ -170,10 +172,10 @@ class CommandLayerTest {
         try (ConfigFixture ignored = new ConfigFixture(serverPort, deadPort)) {
             startRuntime();
 
-            PLATFORM.clearRecordings();
-            new ReconnectCommand(PLATFORM, LOGGER, runtime.getWebsocketManager())
-                    .reconnect(new TestCommandSource(), false);
-            List<String> messages = PLATFORM.getReturnMessages();
+            FakeCommandSource source = new FakeCommandSource();
+            new ReconnectCommand(LOGGER, runtime.getWebsocketManager())
+                    .reconnect(source, false);
+            List<String> messages = source.getReplies();
 
             assertTrue(
                     containsAny(messages, CommandConstant.RECONNECTED),

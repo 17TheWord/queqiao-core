@@ -25,7 +25,7 @@ public final class SendTitleApi extends PlatformApi<TitlePayload, Void> {
      */
     private static final int MAX_TITLE_DURATION_TICKS = 20 * 60 * 60;
 
-    public SendTitleApi(Logger logger, AbstractPlatformContext<?, ?, ?, ?> platform) {
+    public SendTitleApi(Logger logger, AbstractPlatformContext<?, ?, ?> platform) {
         super(TitlePayload.class, logger, platform);
     }
 

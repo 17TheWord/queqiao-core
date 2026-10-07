@@ -1,7 +1,7 @@
 package io.github.theword.queqiao.core.command;
 
 import io.github.theword.queqiao.core.constant.CommandConstant;
-import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
+import io.github.theword.queqiao.core.platform.CommandSource;
 import io.github.theword.queqiao.core.utils.Tool;
 import org.slf4j.Logger;
 
@@ -16,9 +16,13 @@ import java.util.Objects;
  * <p>采用树形结构管理命令层级关系
  * <p>所有命令均需继承此类
  *
- * <p><b>依赖注入</b>：命令返回消息实现与日志实现均由构造器显式注入
- * （由 Runtime 或平台侧持有 Runtime 的对象负责组装），
- * 不再从任何静态全局上下文获取。
+ * <p><b>命令来源</b>：命令层只认识 {@link CommandSource}——不认识任何平台类型，
+ * 也不再通过 {@code AbstractPlatformContext} 回执或判断权限，
+ * 那两项能力已归属 {@link CommandSource}。
+ * 因此本类<b>不再持有</b>平台上下文，也<b>不再是泛型类</b>。
+ *
+ * <p><b>依赖注入</b>：日志实现由构造器显式注入（由 Runtime 或平台侧持有 Runtime 的对象负责组装），
+ * 不从任何静态全局上下文获取。
  *
  * @since 0.5.0
  */
@@ -35,11 +39,6 @@ public abstract class SubCommand {
     protected final List<SubCommand> children = new ArrayList<>();
 
     /**
-     * 命令返回消息实现
-     */
-    protected final AbstractPlatformContext<?, ?, ?, ?> platformContext;
-
-    /**
      * 日志实现
      */
     protected final Logger logger;
@@ -47,11 +46,9 @@ public abstract class SubCommand {
     /**
      * 构造子命令
      *
-     * @param platformContext 命令返回消息实现，不得为 null
-     * @param logger               日志实现，不得为 null
+     * @param logger 日志实现，不得为 null
      */
-    protected SubCommand(AbstractPlatformContext<?, ?, ?, ?> platformContext, Logger logger) {
-        this.platformContext = Objects.requireNonNull(platformContext, "platformContext");
+    protected SubCommand(Logger logger) {
         this.logger = Objects.requireNonNull(logger, "logger");
     }
 
@@ -170,22 +167,25 @@ public abstract class SubCommand {
     /**
      * 执行命令
      *
-     * @param commandReturner 命令执行者
-     * @param args            命令参数
+     * <p>权限判定与回执都通过 {@link CommandSource} 完成，
+     * 不再经过平台上下文。
+     *
+     * @param source 命令来源，不得为 null（无实际来源时使用 {@link CommandSource#NONE}）
+     * @param args   命令参数
      * @since 0.5.0
      */
-    public int execute(Object commandReturner, List<String> args) {
+    public int execute(CommandSource source, List<String> args) {
         try {
-            if (!platformContext.checkPermission(commandReturner, getPermissionNode())) {
-                platformContext.returnCallBackMessage(commandReturner, "您没有权限执行此命令。");
+            if (!source.hasPermission(getPermissionNode())) {
+                source.reply("您没有权限执行此命令。");
                 return CommandConstant.FAIL_SIGNAL;
             }
-            platformContext.returnCallBackMessage(commandReturner, "============ 鹊桥 ===========");
-            onExecute(commandReturner, args);
-            platformContext.returnCallBackMessage(commandReturner, "============================");
+            source.reply("============ 鹊桥 ===========");
+            onExecute(source, args);
+            source.reply("============================");
             return CommandConstant.SUCCESS_SIGNAL;
         } catch (Exception e) {
-            platformContext.returnCallBackMessage(commandReturner, "命令执行出错: " + e.getMessage());
+            source.reply("命令执行出错: " + e.getMessage());
             logger.error("命令执行出错", e);
             return CommandConstant.FAIL_SIGNAL;
         }
@@ -194,24 +194,24 @@ public abstract class SubCommand {
     /**
      * 执行命令逻辑
      *
-     * @param commandReturner 命令执行者
-     * @param args            命令参数
+     * @param source 命令来源，不得为 null
+     * @param args   命令参数
      */
-    protected abstract void onExecute(Object commandReturner, List<String> args);
+    protected abstract void onExecute(CommandSource source, List<String> args);
 
 
     /**
      * 递归发送指定命令以及所有子命令的树形结构
      *
-     * @param commandReturner 命令执行者
-     * @param command         当前命令节点
+     * @param source  命令来源，不得为 null
+     * @param command 当前命令节点
      */
-    public void sendCommandTree(Object commandReturner, SubCommand command) {
+    public void sendCommandTree(CommandSource source, SubCommand command) {
         String msg = Tool.format("{} - {}", command.getUsage(), command.getDescription());
-        platformContext.returnCallBackMessage(commandReturner, msg);
+        source.reply(msg);
 
         for (SubCommand child : command.getChildren()) {
-            sendCommandTree(commandReturner, child);
+            sendCommandTree(source, child);
         }
     }
 

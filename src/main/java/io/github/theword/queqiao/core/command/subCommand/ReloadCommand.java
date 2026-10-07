@@ -1,7 +1,7 @@
 package io.github.theword.queqiao.core.command.subCommand;
 
 import io.github.theword.queqiao.core.command.SubCommand;
-import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
+import io.github.theword.queqiao.core.platform.CommandSource;
 import org.slf4j.Logger;
 
 import java.util.List;
@@ -18,15 +18,14 @@ import java.util.function.Consumer;
 public class ReloadCommand extends SubCommand {
 
     /**
-     * 触发 Runtime 重载的动作，入参为命令执行者
+     * 触发 Runtime 重载的动作，入参为命令来源
      */
-    private final Consumer<Object> reloadAction;
+    private final Consumer<CommandSource> reloadAction;
 
     public ReloadCommand(
-            AbstractPlatformContext<?, ?, ?, ?> platformContext,
             Logger logger,
-            Consumer<Object> reloadAction) {
-        super(platformContext, logger);
+            Consumer<CommandSource> reloadAction) {
+        super(logger);
         this.reloadAction = Objects.requireNonNull(reloadAction, "reloadAction");
     }
 
@@ -53,11 +52,11 @@ public class ReloadCommand extends SubCommand {
     /**
      * 重载 WebSocket reload 命令调用
      *
-     * @param commandReturner 命令执行者
+     * @param source 命令来源
      * @param args            命令参数
      */
     @Override
-    protected void onExecute(Object commandReturner, List<String> args) {
-        reloadAction.accept(commandReturner);
+    protected void onExecute(CommandSource source, List<String> args) {
+        reloadAction.accept(source);
     }
 }

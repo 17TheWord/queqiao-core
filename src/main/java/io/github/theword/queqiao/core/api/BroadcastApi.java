@@ -7,7 +7,6 @@ import io.github.theword.queqiao.core.constant.ProtocolConstants;
 import io.github.theword.queqiao.core.exception.protocol.ProtocolException;
 import io.github.theword.queqiao.core.payload.MessagePayload;
 import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
-import io.github.theword.queqiao.core.platform.PlatformResult;
 import org.slf4j.Logger;
 
 /**
@@ -15,12 +14,12 @@ import org.slf4j.Logger;
  *
  * <p>协议名：{@code broadcast}，别名 {@code send_msg}。
  *
- * <p>结果里的渲染文本由<b>平台</b>提供（只有平台认识自己的组件类型），
- * 本 Api 只用它打日志——{@code C} 不会离开平台层。
+ * <p>Core 语义只有"广播成功 / 广播失败"，因此本 Api <b>不读取平台返回的任何数据</b>，
+ * 只把失败结果交给 {@link Api#mapPlatformResult} 统一映射。
  */
 public final class BroadcastApi extends PlatformApi<MessagePayload, Void> {
 
-    public BroadcastApi(Logger logger, AbstractPlatformContext<?, ?, ?, ?> platform) {
+    public BroadcastApi(Logger logger, AbstractPlatformContext<?, ?, ?> platform) {
         super(MessagePayload.class, logger, platform);
     }
 
@@ -36,11 +35,7 @@ public final class BroadcastApi extends PlatformApi<MessagePayload, Void> {
 
     @Override
     protected Void doExecute(MessagePayload payload) throws ProtocolException {
-        PlatformResult<String> result = platform.broadcast(payload.getMessage());
-
-        String message = requireSuccess(result);
-        logger.info("广播了一条消息：{}", message);
-
+        requireSuccess(platform.broadcast(payload.getMessage()));
         return null;
     }
 }

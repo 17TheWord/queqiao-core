@@ -2,7 +2,7 @@ package io.github.theword.queqiao.core.command;
 
 
 import io.github.theword.queqiao.core.config.Config;
-import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
+import io.github.theword.queqiao.core.platform.CommandSource;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
 import org.slf4j.Logger;
 
@@ -10,7 +10,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.Objects;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
@@ -18,33 +17,28 @@ import java.util.stream.Collectors;
  * 命令执行助手
  *
  * <p>把命令树真正需要的窄依赖显式传入，而不是从静态全局上下文获取。
+ *
+ * <p><b>不再依赖平台上下文</b>：权限过滤与回执都已归属 {@link CommandSource}，
+ * 因此本类只认识 {@link CommandSource}，不认识任何平台类型。
  */
 public class CommandExecutorHelper {
 
     private final RootCommand rootCommand;
 
     /**
-     * 供 tab 补全做权限过滤使用
-     */
-    private final AbstractPlatformContext<?, ?, ?, ?> platformContext;
-
-    /**
      * 构造命令执行助手
      *
-     * @param platformContext 命令返回消息实现，不得为 null
-     * @param logger               日志实现，不得为 null
-     * @param config               配置运行时状态，不得为 null
-     * @param websocketManager     WebSocket 管理器（须在 Runtime.start() 之后获取），不得为 null
-     * @param reloadAction         触发 Runtime 重载的动作，不得为 null
+     * @param logger            日志实现，不得为 null
+     * @param config            配置运行时状态，不得为 null
+     * @param websocketManager  WebSocket 管理器（须在 Runtime.start() 之后获取），不得为 null
+     * @param reloadAction      触发 Runtime 重载的动作，入参为命令来源，不得为 null
      */
     public CommandExecutorHelper(
-            AbstractPlatformContext<?, ?, ?, ?> platformContext,
             Logger logger,
             Config config,
             WebsocketManager websocketManager,
-            Consumer<Object> reloadAction) {
-        this.platformContext = Objects.requireNonNull(platformContext, "platformContext");
-        this.rootCommand = new RootCommand(platformContext, logger, config, websocketManager, reloadAction);
+            Consumer<CommandSource> reloadAction) {
+        this.rootCommand = new RootCommand(logger, config, websocketManager, reloadAction);
     }
 
     public RootCommand getRootCommand() {
@@ -54,12 +48,12 @@ public class CommandExecutorHelper {
     /**
      * 执行命令
      *
-     * @param sender 命令执行者
+     * @param source 命令来源，不得为 null
      * @param args   命令参数
      */
-    public int execute(Object sender, String[] args) {
+    public int execute(CommandSource source, String[] args) {
         if (args.length == 0) {
-            return rootCommand.execute(sender, new ArrayList<>());
+            return rootCommand.execute(source, new ArrayList<>());
         }
 
         SubCommand current = rootCommand;
@@ -94,17 +88,17 @@ public class CommandExecutorHelper {
             remainingArgs.addAll(Arrays.asList(args).subList(index, args.length));
         }
 
-        return current.execute(sender, remainingArgs);
+        return current.execute(source, remainingArgs);
     }
 
     /**
      * Tab 补全
      *
-     * @param sender 命令执行者
+     * @param source 命令来源，不得为 null
      * @param args   命令参数
      * @return 补全列表
      */
-    public List<String> tabComplete(Object sender, String[] args) {
+    public List<String> tabComplete(CommandSource source, String[] args) {
         if (args.length == 0) {
             return Collections.emptyList();
         }
@@ -131,6 +125,6 @@ public class CommandExecutorHelper {
         String lastArg = args[args.length - 1].toLowerCase();
 
         // 返回匹配前缀的子命令名称，并过滤无权限的命令
-        return current.getChildren().stream().filter(child -> platformContext.checkPermission(sender, child.getPermissionNode())).map(SubCommand::getName).filter(name -> name.toLowerCase().startsWith(lastArg)).collect(Collectors.toList());
+        return current.getChildren().stream().filter(child -> source.hasPermission(child.getPermissionNode())).map(SubCommand::getName).filter(name -> name.toLowerCase().startsWith(lastArg)).collect(Collectors.toList());
     }
 }
