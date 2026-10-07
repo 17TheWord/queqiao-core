@@ -317,7 +317,8 @@ public abstract class CommandExecutionContext<NCS> {
 - **未启动 / 已关闭状态下调用是安全的**：`shutdown()` 与 `sendEvent(...)` 在该状态下为**安全空操作**
   （`sendEvent` 只记一条 debug 日志后返回）；`getLogger()` 恒返回非 null 的日志实现。
   依赖"未初始化时调用会抛 NPE"来探测状态的代码需调整。
-  **注意**：`getConfig()` 返回的是启动时加载的配置状态，**启动前可能为 null**。
+  **`getConfig()` 在 `start()` 之前也不为 null**：Runtime 构造时即创建唯一的配置状态，
+  初始包含 Schema 默认值；`start()` 时的配置加载会**更新**这份状态，而不是替换成新的。
 - **重连机制统一**：自动重连与手动重连共用同一套 pipeline（`requestReconnect`），
   引入代际号（generation）与 `reconnectInProgress` 非阻塞互斥，保证同一 Client 任意时刻
   最多一个待执行、最多一个正在执行的重连。
