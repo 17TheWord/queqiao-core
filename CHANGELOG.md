@@ -259,21 +259,22 @@ public abstract class CommandExecutionContext<NCS> {
 - **用户配置错误与程序缺陷严格区分**：只有显式识别的配置错误（`ConfigValidationException`）
   才会按"配置问题"处理；其它 `RuntimeException` 一律**原样上抛**（带堆栈），
   绝不静默转换成默认配置——否则真实缺陷会被伪装成"配置问题"而永远查不出来。
-- **传输层不再依赖全局状态**：`WebsocketManager` 改为通过构造器接收 `Config` 快照，
-  reload 时调用 `restart(Config, Object)` 传入新快照。
-  此前它会在 14 处直接读取 `GlobalContext.getConfig()`。
-- **协议层不再依赖全局状态**：`ProtocolRouter` 与各处理器改为通过构造器接收
-  `HandleApiService`（平台 API）与 `RconCommandExecutor`（RCON 执行器），
-  不再访问 `GlobalContext.getHandleApiService()` / `GlobalContext.sendRconCommand(...)`。
+- **传输层不再依赖全局状态**：`WebsocketManager` 通过构造器接收
+  `HandleProtocolMessage`、`Config` 与 `RuntimeUtils`；reload 时通过
+  `restart(Config)` 替换配置快照，不再读取全局配置。
+- **协议层改为 API 集合注入**：`ProtocolRouter` 构造器接收
+  `Collection<Api<?, ?>>`，`HandleProtocolMessage` 负责持有并调用路由器。
+  内置 API 由 `DefaultApis` 组装，RCON 能力通过 `RconCommandExecutor`
+  注入 `SendRconCommandApi`。
 - **事件的服务器上下文改为"发布时填充"**：`BaseEvent` 的 `server_name` / `server_version` / `server_type`
   不再在字段初始化器中读取全局状态，而由 `QueQiaoRuntime.sendEvent(...)` 在序列化前调用
   `fillServerContext(...)` 填充。
   **升级提示**：若代码自行构造事件后**不经发布路径**直接序列化，
   这三个字段将由"构造时的全局值"变为 `null`。
-- **构造器签名变更**：`WebsocketManager`（新增 `Config`）、
-  `ProtocolRouter`（新增 `HandleApiService` 与 `RconCommandExecutor`）、
-  `HandleProtocolMessage`（新增 `HandleApiService` 与 `RconCommandExecutor`）、
-  `AbstractProtocolHandler` 及全部 7 个处理器（新增 `HandleApiService`）。
+- **构造器签名变更**：
+  `ProtocolRouter(Logger, Collection<Api<?, ?>>)`；
+  `HandleProtocolMessage(Logger, Gson, Collection<Api<?, ?>>, RuntimeUtils)`；
+  `WebsocketManager(Logger, Gson, HandleProtocolMessage, Config, RuntimeUtils)`。
   仅影响**直接构造**这些类的代码；通过 `QueQiaoRuntime.create(...)` 使用的平台实现不受影响。
 - `MinecraftPingClient` 改用 `GsonUtils.getGson()`，不再经 `GlobalContext`。
 - **`Authorization` 仍支持通过 URL query 传递，并已在 javadoc 中说明其安全代价**：
