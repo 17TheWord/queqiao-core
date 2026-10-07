@@ -4,9 +4,9 @@ import io.github.theword.queqiao.core.config.io.ConfigStore;
 import io.github.theword.queqiao.core.config.schema.ConfigKey;
 import io.github.theword.queqiao.core.config.codec.StringCodec;
 import io.github.theword.queqiao.core.event.PlayerChatEvent;
-import io.github.theword.queqiao.core.handle.HandleApiService;
-import io.github.theword.queqiao.core.handle.HandleCommandReturnMessageService;
+import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
 import io.github.theword.queqiao.core.protocol.handler.status.ServerStatusCollector;
+import io.github.theword.queqiao.core.support.PlatformStubs;
 import io.github.theword.queqiao.core.response.PrivateMessageResponse;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
 import com.google.gson.JsonElement;
@@ -62,46 +62,15 @@ class QueQiaoRuntimeLifecycleTest {
     private static final Logger LOGGER = LoggerFactory.getLogger(QueQiaoRuntimeLifecycleTest.class);
 
     /**
-     * 平台侧 API 实现，测试中不需要真实行为
+     * 空平台上下文：本用例只关心 Runtime 的生命周期，不需要平台行为
      */
-    private static final HandleApiService NOOP_API_SERVICE = new HandleApiService() {
-        @Override
-        public void handleBroadcastMessage(JsonElement jsonData) {
-        }
-
-        @Override
-        public void handleSendTitleMessage(JsonElement titlePayload, JsonElement subTitlePayload, int fadeIn, int stay, int fadeOut) {
-        }
-
-        @Override
-        public void handleSendActionBarMessage(JsonElement jsonData) {
-        }
-
-        @Override
-        public PrivateMessageResponse handleSendPrivateMessage(String nickname, UUID uuid, JsonElement jsonData) {
-            return null;
-        }
-    };
-
-    /**
-     * 平台侧命令返回消息实现，测试中不需要真实行为
-     */
-    private static final HandleCommandReturnMessageService NOOP_RETURN_MESSAGE_SERVICE =
-            new HandleCommandReturnMessageService() {
-                @Override
-                public void handleCommandReturnMessage(Object commandReturner, String message) {
-                }
-
-                @Override
-                public boolean hasPermission(Object commandReturner, String permissionNode) {
-                    return true;
-                }
-            };
+    private static final AbstractPlatformContext<?, ?, ?> NOOP_PLATFORM_CONTEXT =
+            PlatformStubs.noopPlatformContext();
 
     private QueQiaoRuntime runtime;
 
     private QueQiaoRuntime newRuntime() {
-        runtime = QueQiaoRuntime.create(false, "1.20.1", "test", NOOP_API_SERVICE, NOOP_RETURN_MESSAGE_SERVICE);
+        runtime = QueQiaoRuntime.create(null, NOOP_PLATFORM_CONTEXT, null);
         return runtime;
     }
 
@@ -121,8 +90,8 @@ class QueQiaoRuntimeLifecycleTest {
     @Test
     @DisplayName("create 返回独立 Runtime，且 utils / 状态采集器均已就绪")
     void createProducesIndependentRuntime() {
-        QueQiaoRuntime first = QueQiaoRuntime.create(false, "1.20.1", "test", NOOP_API_SERVICE, NOOP_RETURN_MESSAGE_SERVICE);
-        QueQiaoRuntime second = QueQiaoRuntime.create(false, "1.20.1", "test", NOOP_API_SERVICE, NOOP_RETURN_MESSAGE_SERVICE);
+        QueQiaoRuntime first = QueQiaoRuntime.create(null, NOOP_PLATFORM_CONTEXT, null);
+        QueQiaoRuntime second = QueQiaoRuntime.create(null, NOOP_PLATFORM_CONTEXT, null);
 
         assertNotSame(first, second, "两次 create 必须得到不同实例");
         assertNotSame(first.utils, second.utils, "utils 必须与 Runtime 一一绑定，不得共享");
@@ -133,22 +102,14 @@ class QueQiaoRuntimeLifecycleTest {
     }
 
     @Test
-    @DisplayName("create 时平台实现为 null 立即失败并指明参数名（E1）")
+    @DisplayName("create 时平台上下文为 null 立即失败并指明参数名（E1）")
     void createRejectsNullPlatformImplementations() {
-        NullPointerException apiException = assertThrows(
+        NullPointerException exception = assertThrows(
                 NullPointerException.class,
-                () -> QueQiaoRuntime.create(false, "1.20.1", "test", null, NOOP_RETURN_MESSAGE_SERVICE));
+                () -> QueQiaoRuntime.create(null, null, null));
         assertTrue(
-                apiException.getMessage() != null && apiException.getMessage().contains("handleApiService"),
-                "错误信息应指明参数名，实际=" + apiException.getMessage());
-
-        NullPointerException serviceException = assertThrows(
-                NullPointerException.class,
-                () -> QueQiaoRuntime.create(false, "1.20.1", "test", NOOP_API_SERVICE, null));
-        assertTrue(
-                serviceException.getMessage() != null
-                        && serviceException.getMessage().contains("handleCommandReturnMessageService"),
-                "错误信息应指明参数名，实际=" + serviceException.getMessage());
+                exception.getMessage() != null && exception.getMessage().contains("platformContext"),
+                "错误信息应指明参数名，实际=" + exception.getMessage());
     }
 
     @Test
@@ -159,8 +120,7 @@ class QueQiaoRuntimeLifecycleTest {
                 .build();
 
         QueQiaoRuntime created = QueQiaoRuntime.create(
-                false, "test", "test", NOOP_API_SERVICE, NOOP_RETURN_MESSAGE_SERVICE,
-                registry -> registry.register(addonKey));
+                registry -> registry.register(addonKey), NOOP_PLATFORM_CONTEXT, null);
 
         assertNotNull(created.getConfigRegistry().findByPath("addons.ai.model"));
         assertFalse(created.getConfigRegistry().isFrozen());
@@ -292,17 +252,17 @@ class QueQiaoRuntimeLifecycleTest {
             QueQiaoRuntime created = newRuntime();
 
             // NEW
-            assertThrows(IllegalStateException.class, () -> created.reload(null));
+            assertThrows(IllegalStateException.class, () -> created.reload());
             assertEquals(RuntimeState.NEW, created.getState(), "被拒的 reload 不应改变状态");
 
             // RUNNING
             created.start();
-            created.reload(null);
+            created.reload();
             assertEquals(RuntimeState.RUNNING, created.getState(), "reload 不应改变状态");
 
             // STOPPED
             created.shutdown();
-            assertThrows(IllegalStateException.class, () -> created.reload(null));
+            assertThrows(IllegalStateException.class, () -> created.reload());
             assertEquals(RuntimeState.STOPPED, created.getState(), "被拒的 reload 不应改变状态");
         }
     }

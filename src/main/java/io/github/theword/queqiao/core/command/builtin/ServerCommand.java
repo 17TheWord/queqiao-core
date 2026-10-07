@@ -1,23 +1,21 @@
-package io.github.theword.queqiao.core.command.subCommand;
+package io.github.theword.queqiao.core.command.builtin;
 
-import io.github.theword.queqiao.core.command.SubCommand;
-import io.github.theword.queqiao.core.command.subCommand.server.InfoCommand;
+import io.github.theword.queqiao.core.command.CommandExecutionContext;
+import io.github.theword.queqiao.core.command.CommandNode;
 import io.github.theword.queqiao.core.config.Config;
-import io.github.theword.queqiao.core.handle.HandleCommandReturnMessageService;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
 import org.slf4j.Logger;
 
 import java.util.List;
 
-public class ServerCommand extends SubCommand {
+public class ServerCommand<NCS> extends CommandNode<NCS> {
 
     public ServerCommand(
-            HandleCommandReturnMessageService returnMessageService,
             Logger logger,
             Config config,
             WebsocketManager websocketManager) {
-        super(returnMessageService, logger);
-        addChild(new InfoCommand(returnMessageService, logger, config, websocketManager));
+        super(logger);
+        addChild(new InfoCommand<>(logger, config, websocketManager));
     }
 
     /**
@@ -46,11 +44,11 @@ public class ServerCommand extends SubCommand {
      *
      * <p>位于本命令 pass
      *
-     * @param commandReturner 命令执行者
+     * @param context 命令执行上下文
      * @param args            命令参数
      */
     @Override
-    protected void onExecute(Object commandReturner, List<String> args) {
-        sendCommandTree(commandReturner, this);
+    protected void onExecute(CommandExecutionContext<NCS> context, List<String> args) {
+        sendCommandTree(context, this);
     }
 }

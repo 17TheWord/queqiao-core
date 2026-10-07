@@ -104,7 +104,13 @@ class RconClientProtocolIntegrationTest {
     void commandLengthUsesMinecraftRconByteLimit() throws Exception {
         String prefix = "/tellraw @a {\"text\":\"";
         String suffix = "\"}";
-        String maxCommand = prefix + "x".repeat(1446 - prefix.length() - suffix.length()) + suffix;
+        // Java 8：String.repeat 是 Java 11+ API，此处手工构造填充串
+        int fillerLength = 1446 - prefix.length() - suffix.length();
+        StringBuilder filler = new StringBuilder(fillerLength);
+        for (int i = 0; i < fillerLength; i++) {
+            filler.append('x');
+        }
+        String maxCommand = prefix + filler + suffix;
         assertEquals(1446, maxCommand.getBytes(StandardCharsets.UTF_8).length);
         try (FakeRconServer server = new FakeRconServer(PASSWORD, "ok", false)) {
             RconClient client = new RconClient(LOGGER, server.getPort(), PASSWORD);

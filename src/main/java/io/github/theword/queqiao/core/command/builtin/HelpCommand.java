@@ -1,15 +1,15 @@
-package io.github.theword.queqiao.core.command.subCommand;
+package io.github.theword.queqiao.core.command.builtin;
 
-import io.github.theword.queqiao.core.command.SubCommand;
-import io.github.theword.queqiao.core.handle.HandleCommandReturnMessageService;
+import io.github.theword.queqiao.core.command.CommandExecutionContext;
+import io.github.theword.queqiao.core.command.CommandNode;
 import org.slf4j.Logger;
 
 import java.util.List;
 
-public class HelpCommand extends SubCommand {
+public class HelpCommand<NCS> extends CommandNode<NCS> {
 
-    public HelpCommand(HandleCommandReturnMessageService returnMessageService, Logger logger) {
-        super(returnMessageService, logger);
+    public HelpCommand(Logger logger) {
+        super(logger);
     }
 
     /**
@@ -35,15 +35,15 @@ public class HelpCommand extends SubCommand {
     /**
      * 执行命令 获取所有命令使用方法
      *
-     * @param commandReturner 命令执行者
+     * @param context 命令执行上下文
      * @param args            命令参数
      */
     @Override
-    protected void onExecute(Object commandReturner, List<String> args) {
-        SubCommand root = this;
+    protected void onExecute(CommandExecutionContext<NCS> context, List<String> args) {
+        CommandNode<NCS> root = this;
         while (root.getParent() != null) {
             root = root.getParent();
         }
-        sendCommandTree(commandReturner, root);
+        sendCommandTree(context, root);
     }
 }

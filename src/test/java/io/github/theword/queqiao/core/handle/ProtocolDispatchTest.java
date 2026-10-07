@@ -2,6 +2,7 @@ package io.github.theword.queqiao.core.handle;
 
 import io.github.theword.queqiao.core.constant.ProtocolConstants;
 import io.github.theword.queqiao.core.exception.rcon.RconException;
+import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
 import io.github.theword.queqiao.core.protocol.RconCommandExecutor;
 import io.github.theword.queqiao.core.support.PlatformStubs;
 import io.github.theword.queqiao.core.response.Response;
@@ -42,14 +43,17 @@ class ProtocolDispatchTest {
      * 分发一个请求并解析回 {@link Response}（使用空平台实现）
      */
     private static Response dispatch(String rawJson) {
-        return dispatch(rawJson, PlatformStubs.noopApiService(), PlatformStubs.rconExecutorReturning(""));
+        return dispatch(rawJson, PlatformStubs.noopPlatformContext(), PlatformStubs.rconExecutorReturning(""));
     }
 
     /**
-     * 分发一个请求并解析回 {@link Response}（指定平台实现与 RCON 执行器）
+     * 分发一个请求并解析回 {@link Response}（指定平台上下文与 RCON 执行器）
      */
-    private static Response dispatch(String rawJson, HandleApiService apiService, RconCommandExecutor rconCommandExecutor) {
-        String responseJson = PlatformStubs.newDispatcher(LOGGER, GSON, apiService, rconCommandExecutor).handleHttpJson(rawJson);
+    private static Response dispatch(
+            String rawJson,
+            AbstractPlatformContext<?, ?, ?> platformContext,
+            RconCommandExecutor rconCommandExecutor) {
+        String responseJson = PlatformStubs.newDispatcher(LOGGER, GSON, platformContext, rconCommandExecutor).handleHttpJson(rawJson);
         Response response = GSON.fromJson(responseJson, Response.class);
         assertNotNull(response, "分发结果不应为 null，原始响应=" + responseJson);
         assertNotNull(response.getCode(), "响应应带状态码，原始响应=" + responseJson);
@@ -140,13 +144,13 @@ class ProtocolDispatchTest {
     @DisplayName("send_title 的合法时长通过校验并真正调用平台实现")
     void sendTitleWithValidDurationReachesPlatform() {
         String body = "{\"api\":\"send_title\",\"data\":{\"title\":{\"text\":\"hi\"},\"fade_in\":10,\"stay\":70,\"fade_out\":20}}";
-        PlatformStubs.RecordingApiService apiService = PlatformStubs.recordingApiService();
+        PlatformStubs.RecordingPlatformContext platformContext = PlatformStubs.recordingPlatformContext();
 
-        Response response = dispatch(body, apiService, PlatformStubs.rconExecutorReturning(""));
+        Response response = dispatch(body, platformContext, PlatformStubs.rconExecutorReturning(""));
 
         assertEquals(ProtocolConstants.Status.SUCCESS, response.getCode().intValue(), "合法请求应成功");
-        assertEquals(1, apiService.getTitleCalls().size(), "应真正调用平台实现一次：" + apiService.getTitleCalls());
-        assertTrue(apiService.getTitleCalls().get(0).contains("fadeIn=10"), "应透传时长参数：" + apiService.getTitleCalls());
+        assertEquals(1, platformContext.getTitleCalls().size(), "应真正调用平台实现一次：" + platformContext.getTitleCalls());
+        assertTrue(platformContext.getTitleCalls().get(0).contains("fadeIn=10"), "应透传时长参数：" + platformContext.getTitleCalls());
     }
 
     @Test
@@ -176,32 +180,32 @@ class ProtocolDispatchTest {
     @Test
     @DisplayName("broadcast 成功路径真正调用平台实现")
     void broadcastReachesPlatform() {
-        PlatformStubs.RecordingApiService apiService = PlatformStubs.recordingApiService();
+        PlatformStubs.RecordingPlatformContext platformContext = PlatformStubs.recordingPlatformContext();
 
         Response response = dispatch(
                 "{\"api\":\"broadcast\",\"data\":{\"message\":{\"text\":\"hi\"}}}",
-                apiService,
+                platformContext,
                 PlatformStubs.rconExecutorReturning(""));
 
         assertEquals(ProtocolConstants.Status.SUCCESS, response.getCode().intValue(), "合法请求应成功");
-        assertEquals(1, apiService.getBroadcasts().size(), "应调用平台广播：" + apiService.getBroadcasts());
+        assertEquals(1, platformContext.getBroadcasts().size(), "应调用平台广播：" + platformContext.getBroadcasts());
     }
 
     @Test
     @DisplayName("send_private_msg 成功路径调用平台实现并归一化昵称")
     void privateMessageReachesPlatformWithTrimmedNickname() {
-        PlatformStubs.RecordingApiService apiService = PlatformStubs.recordingApiService();
+        PlatformStubs.RecordingPlatformContext platformContext = PlatformStubs.recordingPlatformContext();
 
         Response response = dispatch(
                 "{\"api\":\"send_private_msg\",\"data\":{\"nickname\":\"  Steve  \",\"message\":{\"text\":\"hi\"}}}",
-                apiService,
+                platformContext,
                 PlatformStubs.rconExecutorReturning(""));
 
         assertEquals(ProtocolConstants.Status.SUCCESS, response.getCode().intValue(), "合法请求应成功");
-        assertEquals(1, apiService.getPrivateMessages().size(), "应调用平台私聊：" + apiService.getPrivateMessages());
+        assertEquals(1, platformContext.getPrivateMessages().size(), "应调用平台私聊：" + platformContext.getPrivateMessages());
         assertTrue(
-                apiService.getPrivateMessages().get(0).contains("nickname=Steve"),
-                "昵称应被 trim 后传递：" + apiService.getPrivateMessages());
+                platformContext.getPrivateMessages().get(0).contains("nickname=Steve"),
+                "昵称应被 trim 后传递：" + platformContext.getPrivateMessages());
     }
 
     @Test
@@ -209,7 +213,7 @@ class ProtocolDispatchTest {
     void rconCommandReturnsExecutionResult() {
         Response response = dispatch(
                 "{\"api\":\"send_rcon_command\",\"data\":{\"command\":\"list\"}}",
-                PlatformStubs.noopApiService(),
+                PlatformStubs.noopPlatformContext(),
                 PlatformStubs.rconExecutorReturning("There are 3 players"));
 
         assertEquals(ProtocolConstants.Status.SUCCESS, response.getCode().intValue(), "合法请求应成功");
@@ -221,7 +225,7 @@ class ProtocolDispatchTest {
     void rconDisabledReturnsServiceUnavailable() {
         Response response = dispatch(
                 "{\"api\":\"send_rcon_command\",\"data\":{\"command\":\"list\"}}",
-                PlatformStubs.noopApiService(),
+                PlatformStubs.noopPlatformContext(),
                 PlatformStubs.rconExecutorFailing(RconException.Kind.DISABLED));
 
         assertEquals(
@@ -235,7 +239,7 @@ class ProtocolDispatchTest {
     void rconCommandFailedReturnsInternalError() {
         Response response = dispatch(
                 "{\"api\":\"send_rcon_command\",\"data\":{\"command\":\"list\"}}",
-                PlatformStubs.noopApiService(),
+                PlatformStubs.noopPlatformContext(),
                 PlatformStubs.rconExecutorFailing(RconException.Kind.COMMAND_FAILED));
 
         assertEquals(ProtocolConstants.Status.INTERNAL_ERROR, response.getCode().intValue());
@@ -246,7 +250,7 @@ class ProtocolDispatchTest {
     void invalidRconCommandReturnsBadRequest() {
         Response response = dispatch(
                 "{\"api\":\"send_rcon_command\",\"data\":{\"command\":\"list\"}}",
-                PlatformStubs.noopApiService(),
+                PlatformStubs.noopPlatformContext(),
                 PlatformStubs.rconExecutorFailing(RconException.Kind.INVALID_COMMAND));
 
         assertEquals(ProtocolConstants.Status.BAD_REQUEST, response.getCode().intValue());

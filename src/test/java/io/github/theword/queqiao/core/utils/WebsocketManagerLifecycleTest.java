@@ -3,7 +3,6 @@ package io.github.theword.queqiao.core.utils;
 import io.github.theword.queqiao.core.config.ConfigKeys;
 import io.github.theword.queqiao.core.config.schema.ConfigRegistry;
 import io.github.theword.queqiao.core.config.Config;
-import io.github.theword.queqiao.core.handle.HandleCommandReturnMessageService;
 import io.github.theword.queqiao.core.handle.HandleProtocolMessage;
 import io.github.theword.queqiao.core.support.PlatformStubs;
 import io.github.theword.queqiao.core.websocket.WsClient;
@@ -91,7 +90,6 @@ class WebsocketManagerLifecycleTest {
         return new WebsocketManager(
                 LOGGER,
                 GSON,
-                new NoopReturnMessageService(),
                 HANDLE_PROTOCOL_MESSAGE,
                 config,
                 PlatformStubs.newRuntimeUtils(LOGGER));
@@ -123,7 +121,7 @@ class WebsocketManagerLifecycleTest {
                     "关闭后不应继续执行已排队的延迟任务");
             assertTrue(scheduler.getQueue().isEmpty(), "构造后不应有排队任务");
         } finally {
-            manager.stop(1000, "test cleanup", null);
+            manager.stop(1000, "test cleanup");
         }
     }
 
@@ -134,11 +132,11 @@ class WebsocketManagerLifecycleTest {
         ScheduledThreadPoolExecutor scheduler = manager.reconnectSchedulerForTest();
         assertFalse(scheduler.isShutdown(), "初始状态不应为已关闭");
 
-        manager.stop(1000, "test", null);
+        manager.stop(1000, "test");
         assertTrue(scheduler.isShutdown(), "stop() 应释放共享调度器");
 
         // 幂等：重复调用不得抛异常，状态保持已关闭
-        manager.stop(1000, "test", null);
+        manager.stop(1000, "test");
         assertTrue(scheduler.isShutdown(), "重复 stop() 后调度器仍应处于已关闭状态");
     }
 
@@ -146,10 +144,10 @@ class WebsocketManagerLifecycleTest {
     @DisplayName("stop() 之后 restart() 不抛异常（已销毁保护）")
     void restartAfterStopIsSafe() {
         WebsocketManager manager = newManager(disabledTransportsConfig());
-        manager.stop(1000, "test", null);
+        manager.stop(1000, "test");
 
         // 已销毁后重载应被安全忽略，而不是复用已关闭的 scheduler
-        manager.restart(disabledTransportsConfig(), null);
+        manager.restart(disabledTransportsConfig());
         assertTrue(manager.reconnectSchedulerForTest().isShutdown(), "已销毁后不应复活调度器");
     }
 
@@ -162,12 +160,12 @@ class WebsocketManagerLifecycleTest {
             ScheduledThreadPoolExecutor scheduler = manager.reconnectSchedulerForTest();
             assertTrue(manager.getWsClientList().isEmpty(), "初始不应有客户端");
 
-            manager.restart(clientConfig(Collections.singletonList("ws://127.0.0.1:" + deadPort + "/a")), null);
+            manager.restart(clientConfig(Collections.singletonList("ws://127.0.0.1:" + deadPort + "/a")));
 
             assertEquals(1, manager.getWsClientList().size(), "重载后应按新配置创建 1 个客户端");
             assertFalse(scheduler.isShutdown(), "restart 不得销毁共享调度器");
         } finally {
-            manager.stop(1000, "test cleanup", null);
+            manager.stop(1000, "test cleanup");
         }
     }
 
@@ -181,15 +179,15 @@ class WebsocketManagerLifecycleTest {
         int deadPort = findFreePort();
         WebsocketManager manager = newManager(clientConfig(Collections.singletonList("ws://127.0.0.1:" + deadPort + "/a")));
         try {
-            manager.start(null);
+            manager.start();
             int afterFirstStart = manager.getWsClientList().size();
             assertEquals(1, afterFirstStart, "首次 start 应创建 1 个客户端");
 
-            manager.start(null);
+            manager.start();
 
             assertEquals(afterFirstStart, manager.getWsClientList().size(), "重复 start 不得追加重复客户端");
         } finally {
-            manager.stop(1000, "test cleanup", null);
+            manager.stop(1000, "test cleanup");
         }
     }
 
@@ -206,7 +204,7 @@ class WebsocketManagerLifecycleTest {
         Config config = clientConfig(Arrays.asList("ws://[invalid", "ws://127.0.0.1:" + deadPort + "/ok"));
         WebsocketManager manager = newManager(config);
         try {
-            manager.start(null);
+            manager.start();
 
             List<WsClient> clients = manager.getWsClientList();
             assertEquals(1, clients.size(), "合法 endpoint 应被创建，非法 endpoint 不应阻断它");
@@ -214,22 +212,8 @@ class WebsocketManagerLifecycleTest {
                     clients.get(0).getURI().toString().contains("/ok"),
                     "被创建的应是合法 endpoint，实际=" + clients.get(0).getURI());
         } finally {
-            manager.stop(1000, "test cleanup", null);
+            manager.stop(1000, "test cleanup");
         }
     }
 
-    /**
-     * 空实现，避免测试依赖平台实现
-     */
-    private static final class NoopReturnMessageService extends HandleCommandReturnMessageService {
-
-        @Override
-        public void handleCommandReturnMessage(Object commandReturner, String message) {
-        }
-
-        @Override
-        public boolean hasPermission(Object commandReturner, String permissionNode) {
-            return true;
-        }
-    }
 }

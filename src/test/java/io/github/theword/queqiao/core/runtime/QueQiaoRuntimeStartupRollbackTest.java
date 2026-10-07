@@ -2,9 +2,9 @@ package io.github.theword.queqiao.core.runtime;
 
 import io.github.theword.queqiao.core.config.exception.ConfigValidationException;
 import io.github.theword.queqiao.core.config.io.ConfigStore;
-import io.github.theword.queqiao.core.handle.HandleApiService;
-import io.github.theword.queqiao.core.handle.HandleCommandReturnMessageService;
+import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
 import io.github.theword.queqiao.core.protocol.handler.status.ServerStatusCollector;
+import io.github.theword.queqiao.core.support.PlatformStubs;
 import io.github.theword.queqiao.core.response.PrivateMessageResponse;
 import com.google.gson.JsonElement;
 import org.junit.jupiter.api.AfterEach;
@@ -61,36 +61,11 @@ class QueQiaoRuntimeStartupRollbackTest {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(QueQiaoRuntimeStartupRollbackTest.class);
 
-    private static final HandleApiService NOOP_API_SERVICE = new HandleApiService() {
-        @Override
-        public void handleBroadcastMessage(JsonElement jsonData) {
-        }
-
-        @Override
-        public void handleSendTitleMessage(JsonElement titlePayload, JsonElement subTitlePayload, int fadeIn, int stay, int fadeOut) {
-        }
-
-        @Override
-        public void handleSendActionBarMessage(JsonElement jsonData) {
-        }
-
-        @Override
-        public PrivateMessageResponse handleSendPrivateMessage(String nickname, UUID uuid, JsonElement jsonData) {
-            return null;
-        }
-    };
-
-    private static final HandleCommandReturnMessageService NOOP_RETURN_MESSAGE_SERVICE =
-            new HandleCommandReturnMessageService() {
-                @Override
-                public void handleCommandReturnMessage(Object commandReturner, String message) {
-                }
-
-                @Override
-                public boolean hasPermission(Object commandReturner, String permissionNode) {
-                    return true;
-                }
-            };
+    /**
+     * 空平台上下文：本用例只关心 Runtime 的启动失败语义，不需要平台行为
+     */
+    private static final AbstractPlatformContext<?, ?, ?> NOOP_PLATFORM_CONTEXT =
+            PlatformStubs.noopPlatformContext();
 
     private QueQiaoRuntime runtime;
 
@@ -147,7 +122,7 @@ class QueQiaoRuntimeStartupRollbackTest {
             runtime = created;
 
             assertThrows(ConfigValidationException.class, created::start);
-            assertThrows(IllegalStateException.class, () -> created.reload(null));
+            assertThrows(IllegalStateException.class, () -> created.reload());
             assertEquals(RuntimeState.FAILED, created.getState(), "被拒的 reload 不应改变状态");
         }
     }
@@ -177,7 +152,7 @@ class QueQiaoRuntimeStartupRollbackTest {
     }
 
     private static QueQiaoRuntime newRuntime() {
-        return QueQiaoRuntime.create(false, "1.20.1", "test", NOOP_API_SERVICE, NOOP_RETURN_MESSAGE_SERVICE);
+        return QueQiaoRuntime.create(null, NOOP_PLATFORM_CONTEXT, null);
     }
 
     /**

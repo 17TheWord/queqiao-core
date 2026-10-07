@@ -21,9 +21,11 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -98,7 +100,10 @@ class WsServerHandshakeAuthTest {
         try {
             wrongTokenClient.connect();
             assertTrue(wrongTokenClient.awaitClosed(10_000L), "携带错误 token 的连接应被服务端关闭");
-            assertEquals(CLOSE_CODE_POLICY_VIOLATION, wrongTokenClient.getCloseCode(), "应以 1008 关闭");
+            assertEquals(
+                    CLOSE_CODE_POLICY_VIOLATION,
+                    wrongTokenClient.getCloseCode(),
+                    "应以 1008 关闭（" + wrongTokenClient.describeClose() + "）");
 
             correctTokenClient.connect();
             assertTrue(correctTokenClient.awaitOpen(10_000L), "携带正确 token 的连接应通过协议层握手");
@@ -111,12 +116,12 @@ class WsServerHandshakeAuthTest {
     }
 
     @Test
-    @DisplayName("真实 WebSocket 请求经过 WsServer 分发到 HandleApiService")
-    void websocketRequestReachesHandleApiService() throws Exception {
+    @DisplayName("真实 WebSocket 请求经过 WsServer 分发到平台上下文")
+    void websocketRequestReachesPlatformContext() throws Exception {
         int port = findFreePort();
-        PlatformStubs.RecordingApiService apiService = PlatformStubs.recordingApiService();
+        PlatformStubs.RecordingPlatformContext platformContext = PlatformStubs.recordingPlatformContext();
         HandleProtocolMessage dispatcher = PlatformStubs.newDispatcher(
-                LOGGER, GSON, apiService, PlatformStubs.rconExecutorReturning(""));
+                LOGGER, GSON, platformContext, PlatformStubs.rconExecutorReturning(""));
         WsServer server = new WsServer(
                 new InetSocketAddress("127.0.0.1", port), LOGGER, dispatcher, SERVER_NAME, ACCESS_TOKEN, true);
         server.start();
@@ -135,8 +140,8 @@ class WsServerHandshakeAuthTest {
             assertEquals(ProtocolConstants.Status.SUCCESS, response.getCode().intValue());
             assertEquals(ProtocolConstants.Api.BROADCAST, response.getApi());
             assertEquals("ws-server-api", response.getEcho());
-            assertEquals(1, apiService.getBroadcasts().size());
-            assertEquals("{\"text\":\"from websocket\"}", apiService.getBroadcasts().get(0));
+            assertEquals(1, platformContext.getBroadcasts().size());
+            assertEquals("{\"text\":\"from websocket\"}", platformContext.getBroadcasts().get(0));
         } finally {
             client.close();
             server.stop(1000);
@@ -158,7 +163,10 @@ class WsServerHandshakeAuthTest {
         try {
             clientWithoutName.connect();
             assertTrue(clientWithoutName.awaitClosed(10_000L), "缺失 x-self-name 的连接应被服务端关闭");
-            assertEquals(CLOSE_CODE_POLICY_VIOLATION, clientWithoutName.getCloseCode(), "应以 1008 关闭");
+            assertEquals(
+                    CLOSE_CODE_POLICY_VIOLATION,
+                    clientWithoutName.getCloseCode(),
+                    "应以 1008 关闭（" + clientWithoutName.describeClose() + "）");
         } finally {
             clientWithoutName.close();
             server.stop(1000);
@@ -273,7 +281,11 @@ class WsServerHandshakeAuthTest {
         try {
             client.connect();
             assertTrue(client.awaitClosed(10_000L), "未携带凭据的连接应被关闭");
-            assertEquals(CLOSE_CODE_POLICY_VIOLATION, client.getCloseCode(), "应以 1008 关闭");
+            assertEquals(
+                    CLOSE_CODE_POLICY_VIOLATION,
+                    client.getCloseCode(),
+                    "应以 1008 关闭（" + client.describeClose() + "）");
+            assertNotNull(client.getCloseReason(), "关闭帧应携带服务端给出的原因（证明真的收到了关闭帧）");
         } finally {
             client.close();
             server.stop(1000);
@@ -355,7 +367,35 @@ class WsServerHandshakeAuthTest {
         private final CountDownLatch openLatch = new CountDownLatch(1);
         private final CountDownLatch closeLatch = new CountDownLatch(1);
         private final CountDownLatch messageLatch = new CountDownLatch(1);
-        private volatile int closeCode = Integer.MIN_VALUE;
+
+        /**
+         * {@code onClose} 的调用次数
+         *
+         * <p>Java-WebSocket 在关闭流程中<b>可能回调多次</b>：先因收到对端的关闭帧回调一次，
+         * 随后 {@code eot()} 又会以 {@code ABNORMAL_CLOSE(1006)} 再回调一次。
+         */
+        private final AtomicInteger closeNotifications = new AtomicInteger();
+
+        /**
+         * 第一次关闭通知的关闭码
+         *
+         * <p>只有第一次通知反映<b>服务端实际发送</b>的关闭码；后续由 {@code eot()}
+         * 触发的通知一律是 1006，属于传输层收尾，不代表服务端的拒绝码。
+         */
+        private volatile int firstCloseCode = Integer.MIN_VALUE;
+
+        /**
+         * 最后一次关闭通知的关闭码（仅用于失败时诊断）
+         */
+        private volatile int lastCloseCode = Integer.MIN_VALUE;
+
+        /**
+         * 第一次关闭通知携带的原因
+         *
+         * <p>非空即证明客户端确实收到了服务端发送的关闭帧（而非由传输层合成的码）。
+         */
+        private volatile String firstCloseReason;
+
         private volatile String lastMessage;
 
         private ProbeClient(int port, String selfName, String authorization) throws Exception {
@@ -406,7 +446,11 @@ class WsServerHandshakeAuthTest {
 
         @Override
         public void onClose(int code, String reason, boolean remote) {
-            this.closeCode = code;
+            if (closeNotifications.incrementAndGet() == 1) {
+                firstCloseCode = code;
+                firstCloseReason = reason;
+            }
+            lastCloseCode = code;
             closeLatch.countDown();
         }
 
@@ -445,8 +489,33 @@ class WsServerHandshakeAuthTest {
             return messageLatch.await(timeoutMillis, TimeUnit.MILLISECONDS);
         }
 
+        /**
+         * @return 第一次关闭通知的关闭码 —— 即服务端实际发送的关闭码
+         */
         private int getCloseCode() {
-            return closeCode;
+            return firstCloseCode;
+        }
+
+        /**
+         * @return 第一次关闭通知携带的原因，可为 null
+         */
+        private String getCloseReason() {
+            return firstCloseReason;
+        }
+
+        /**
+         * 关闭过程的诊断描述，用于失败信息
+         *
+         * <p>把三次观测值都带上：若再次出现失败，可直接判断是"服务端没发关闭帧"
+         * （firstCloseCode 就是 1006）还是"被后续的 eot() 通知覆盖"（firstCloseCode 正确）。
+         *
+         * @return 诊断描述
+         */
+        private String describeClose() {
+            return "firstCloseCode=" + firstCloseCode
+                    + ", firstCloseReason=" + firstCloseReason
+                    + ", lastCloseCode=" + lastCloseCode
+                    + ", onClose 调用次数=" + closeNotifications.get();
         }
 
         private String getLastMessage() {

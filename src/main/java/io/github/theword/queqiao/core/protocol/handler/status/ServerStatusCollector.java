@@ -26,6 +26,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
 /**
  * 服务器状态采集器
@@ -69,8 +70,20 @@ public final class ServerStatusCollector {
     /** 刷新调度器缺席时（尚未启动或已停止）的同步回退缓存有效期。 */
     private static final long SNAPSHOT_CACHE_TTL_MILLIS = 2000L;
 
-    private final String serverType;
-    private final String serverVersion;
+    /**
+     * 服务端类型提供者
+     *
+     * <p>用 Supplier 而非 String，是为了支持<b>延迟获取</b>：平台可能在本实例构造时
+     * 还没拿到服务端实例，只有启动完成后 {@code getServerType()} 才可用。
+     * 每次构建快照时现取，避免把"构造瞬间的值"固化下来。
+     */
+    private final Supplier<String> serverTypeSupplier;
+
+    /**
+     * 服务端版本提供者，语义同 {@link #serverTypeSupplier}
+     */
+    private final Supplier<String> serverVersionSupplier;
+
     private final Logger logger;
 
     /** 串行化本实例对采集目标、缓存与线程池的变更。 */
@@ -90,13 +103,14 @@ public final class ServerStatusCollector {
     /**
      * 构造状态采集器
      *
-     * @param serverType    服务端类型，允许为 null（未指定）
-     * @param serverVersion 服务端版本，允许为 null（未指定）
-     * @param logger        日志实现，不得为 null
+     * @param serverTypeSupplier    服务端类型提供者，允许为 null；返回值允许为 null（未指定）
+     * @param serverVersionSupplier 服务端版本提供者，允许为 null；返回值允许为 null（未指定）
+     * @param logger                日志实现，不得为 null
      */
-    public ServerStatusCollector(String serverType, String serverVersion, Logger logger) {
-        this.serverType = serverType;
-        this.serverVersion = serverVersion;
+    public ServerStatusCollector(
+            Supplier<String> serverTypeSupplier, Supplier<String> serverVersionSupplier, Logger logger) {
+        this.serverTypeSupplier = serverTypeSupplier;
+        this.serverVersionSupplier = serverVersionSupplier;
         this.logger = Objects.requireNonNull(logger, "logger");
         this.metrics = new SystemMetricsCollector(null);
         this.pingTarget = unavailableTarget(DEFAULT_SERVER_HOST, DEFAULT_SERVER_PORT);
@@ -484,11 +498,15 @@ public final class ServerStatusCollector {
 
     private ServerStatusSnapshot createSnapshot(PingTarget target, ServerListPingResult pingResult) {
         return new ServerStatusSnapshot(
-                serverType,
-                serverVersion,
+                getOrNull(serverTypeSupplier),
+                getOrNull(serverVersionSupplier),
                 pingResult,
                 metrics.collectCpuInformation(),
                 metrics.collectMemoryInformation());
+    }
+
+    private static String getOrNull(Supplier<String> supplier) {
+        return supplier == null ? null : supplier.get();
     }
 
     private static ServerListPingResult timeoutPingResult(PingTarget target) {

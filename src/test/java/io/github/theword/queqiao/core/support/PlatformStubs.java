@@ -1,28 +1,36 @@
 package io.github.theword.queqiao.core.support;
 
+import io.github.theword.queqiao.core.api.Api;
+import io.github.theword.queqiao.core.api.DefaultApis;
 import io.github.theword.queqiao.core.config.Config;
 import io.github.theword.queqiao.core.config.ConfigKeys;
 import io.github.theword.queqiao.core.config.schema.ConfigRegistry;
+import io.github.theword.queqiao.core.constant.ServerTypeConstant;
 import io.github.theword.queqiao.core.exception.rcon.RconException;
-import io.github.theword.queqiao.core.handle.HandleApiService;
 import io.github.theword.queqiao.core.handle.HandleProtocolMessage;
+import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
+import io.github.theword.queqiao.core.platform.PlatformResult;
+import io.github.theword.queqiao.core.platform.PlatformResultCode;
+import io.github.theword.queqiao.core.platform.TestComponent;
+import io.github.theword.queqiao.core.platform.TestPlayer;
+import io.github.theword.queqiao.core.platform.TestServer;
 import io.github.theword.queqiao.core.protocol.RconCommandExecutor;
 import io.github.theword.queqiao.core.protocol.handler.status.ServerStatusCollector;
-import io.github.theword.queqiao.core.response.PrivateMessageResponse;
 import io.github.theword.queqiao.core.utils.RuntimeUtils;
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import org.slf4j.Logger;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 
 /**
- * 协议层测试替身
+ * 协议层与平台层的测试替身
  *
- * <p>协议层通过构造器接收"平台 API 实现"与"RCON 执行器"，
+ * <p>协议层通过构造器接收"Api 集合"与"平台上下文"，
  * 因此测试可以注入替身来验证<b>成功路径</b>——
  * 这在依赖静态全局状态的时期是做不到的（平台实现为 null，只能落到 500）。
  */
@@ -32,17 +40,17 @@ public final class PlatformStubs {
     }
 
     /**
-     * 不做任何事、返回 null 的平台 API 实现
+     * 不做任何事、不记录任何内容的平台上下文
      */
-    public static HandleApiService noopApiService() {
-        return new RecordingApiService();
+    public static AbstractPlatformContext<?, ?, ?> noopPlatformContext() {
+        return new RecordingPlatformContext();
     }
 
     /**
-     * 记录所有调用的平台 API 实现
+     * 记录所有调用的平台上下文
      */
-    public static RecordingApiService recordingApiService() {
-        return new RecordingApiService();
+    public static RecordingPlatformContext recordingPlatformContext() {
+        return new RecordingPlatformContext();
     }
 
     /**
@@ -99,52 +107,195 @@ public final class PlatformStubs {
     }
 
     /**
-     * 构造协议分发入口（使用空平台实现与空 RCON 执行器）
+     * 构造协议分发入口（使用空平台上下文与空 RCON 执行器，铺默认 Api 批次）
      */
     public static HandleProtocolMessage newDispatcher(Logger logger, Gson gson) {
-        return new HandleProtocolMessage(
-                logger, gson, noopApiService(), rconExecutorReturning(""), newRuntimeUtils(logger), newStatusCollector(logger));
+        return newDispatcher(logger, gson, noopPlatformContext(), rconExecutorReturning(""));
     }
 
     /**
-     * 构造协议分发入口（指定平台实现与 RCON 执行器）
+     * 构造协议分发入口（指定平台上下文与 RCON 执行器，铺默认 Api 批次）
      */
     public static HandleProtocolMessage newDispatcher(
-            Logger logger, Gson gson, HandleApiService apiService, RconCommandExecutor rconCommandExecutor) {
-        return new HandleProtocolMessage(
-                logger, gson, apiService, rconCommandExecutor, newRuntimeUtils(logger), newStatusCollector(logger));
+            Logger logger, Gson gson,
+            AbstractPlatformContext<?, ?, ?> platformContext,
+            RconCommandExecutor rconCommandExecutor) {
+        ServerStatusCollector statusCollector = newStatusCollector(logger);
+        List<Api<?, ?>> apis = DefaultApis.all(platformContext, statusCollector, rconCommandExecutor, logger);
+        return new HandleProtocolMessage(logger, gson, apis, newRuntimeUtils(logger));
     }
 
     /**
-     * 记录调用的平台 API 实现
+     * 记录调用的平台上下文
+     *
+     * <p>记录发生在<b>平台原语层</b>（{@code broadcast(C)} / {@code sendMessage(P, C)} 等），
+     * 因此它验证的是"请求确实穿透到了平台边界"，而不是某一层中间状态。
+     *
+     * <p>默认在线玩家包含 {@code Player1} / {@code Player2} / {@code Steve}，
+     * 以便私聊成功路径能被验证（{@code findPlayer} 依赖 {@code getPlayers()}）。
      */
-    public static final class RecordingApiService implements HandleApiService {
+    public static final class RecordingPlatformContext
+            extends AbstractPlatformContext<TestServer, TestComponent, TestPlayer> {
+
+        private static final String DEFAULT_SERVER_TYPE = ServerTypeConstant.SPIGOT;
+        private static final String DEFAULT_SERVER_VERSION = "1.20.1";
 
         private final List<String> broadcasts = Collections.synchronizedList(new ArrayList<>());
         private final List<String> actionBars = Collections.synchronizedList(new ArrayList<>());
         private final List<String> titleCalls = Collections.synchronizedList(new ArrayList<>());
         private final List<String> privateMessages = Collections.synchronizedList(new ArrayList<>());
+        private final List<TestPlayer> players = Collections.synchronizedList(new ArrayList<>());
+
+        /**
+         * 平台是否支持标题；false 时 {@code sendTitleComponent} 交回基类默认实现（UNSUPPORTED）
+         */
+        private volatile boolean titleSupported = true;
+
+        /**
+         * 平台是否支持 ActionBar；false 时 {@code sendActionBarComponent} 交回基类默认实现（UNSUPPORTED）
+         */
+        private volatile boolean actionBarSupported = true;
+
+        /**
+         * 强制 broadcast 失败的结果码；null 表示不强制失败
+         */
+        private volatile PlatformResultCode broadcastFailure;
+
+        /**
+         * 强制 sendMessage 失败的结果码；null 表示不强制失败
+         */
+        private volatile PlatformResultCode sendFailure;
+
+        public RecordingPlatformContext() {
+            super(new TestServer());
+            players.add(new TestPlayer("Player1", UUID.randomUUID()));
+            players.add(new TestPlayer("Player2", UUID.randomUUID()));
+            players.add(new TestPlayer("Steve", UUID.randomUUID()));
+        }
+
+        // ---- 平台元数据 ----
 
         @Override
-        public void handleBroadcastMessage(JsonElement jsonData) {
-            broadcasts.add(String.valueOf(jsonData));
+        public String getServerType() {
+            return DEFAULT_SERVER_TYPE;
         }
 
         @Override
-        public void handleSendTitleMessage(JsonElement titlePayload, JsonElement subTitlePayload, int fadeIn, int stay, int fadeOut) {
-            titleCalls.add("title=" + titlePayload + ", subtitle=" + subTitlePayload
+        public String getServerVersion() {
+            return DEFAULT_SERVER_VERSION;
+        }
+
+        // ---- 必需原语 ----
+
+        @Override
+        public TestComponent jsonToComponent(JsonElement jsonElement) {
+            return new TestComponent(jsonElement);
+        }
+
+        @Override
+        public Collection<TestPlayer> getPlayers() {
+            synchronized (players) {
+                return new ArrayList<>(players);
+            }
+        }
+
+        @Override
+        public String getPlayerName(TestPlayer player) {
+            return player.getName();
+        }
+
+        @Override
+        public UUID getPlayerUUID(TestPlayer player) {
+            return player.getUuid();
+        }
+
+        @Override
+        public PlatformResult<Void> broadcast(TestComponent component) {
+            if (broadcastFailure != null) {
+                return PlatformResult.failure(broadcastFailure, "forced broadcast failure");
+            }
+            broadcasts.add(component.getJson());
+            return PlatformResult.success(null);
+        }
+
+        @Override
+        public PlatformResult<Void> sendPrivateMessage(TestPlayer player, TestComponent component) {
+            if (sendFailure != null) {
+                return PlatformResult.failure(sendFailure, "forced send failure");
+            }
+            privateMessages.add("nickname=" + player.getName()
+                    + ", uuid=" + player.getUuid()
+                    + ", message=" + component.getJson());
+            return PlatformResult.success(null);
+        }
+
+        // ---- 可选原语：测试桩全部支持，以便验证成功路径 ----
+
+        @Override
+        public PlatformResult<Void> sendTitleComponent(TestComponent title, TestComponent subtitle,
+                                                       int fadeIn, int stay, int fadeOut) {
+            if (!titleSupported) {
+                // 交回基类默认实现 → PlatformResultCode.UNSUPPORTED，用于验证 503 映射
+                return super.sendTitleComponent(title, subtitle, fadeIn, stay, fadeOut);
+            }
+            titleCalls.add("title=" + jsonOf(title)
+                    + ", subtitle=" + jsonOf(subtitle)
                     + ", fadeIn=" + fadeIn + ", stay=" + stay + ", fadeOut=" + fadeOut);
+            return PlatformResult.success(null);
         }
 
         @Override
-        public void handleSendActionBarMessage(JsonElement jsonData) {
-            actionBars.add(String.valueOf(jsonData));
+        public PlatformResult<Void> sendActionBarComponent(TestComponent component) {
+            if (!actionBarSupported) {
+                // 交回基类默认实现 → PlatformResultCode.UNSUPPORTED，用于验证 503 映射
+                return super.sendActionBarComponent(component);
+            }
+            actionBars.add(component.getJson());
+            return PlatformResult.success(null);
         }
 
-        @Override
-        public PrivateMessageResponse handleSendPrivateMessage(String nickname, UUID uuid, JsonElement jsonData) {
-            privateMessages.add("nickname=" + nickname + ", uuid=" + uuid + ", message=" + jsonData);
-            return null;
+        private static String jsonOf(TestComponent component) {
+            return component == null ? null : component.getJson();
+        }
+
+        // ---- 测试辅助 ----
+
+        /**
+         * 追加一个在线玩家（例如为私聊用例准备目标玩家）
+         */
+        public void addPlayer(String name, UUID uuid) {
+            players.add(new TestPlayer(name, uuid));
+        }
+
+        /**
+         * 设置平台是否支持标题（false → UNSUPPORTED → 503）
+         */
+        public void setTitleSupported(boolean supported) {
+            this.titleSupported = supported;
+        }
+
+        /**
+         * 设置平台是否支持 ActionBar（false → UNSUPPORTED → 503）
+         */
+        public void setActionBarSupported(boolean supported) {
+            this.actionBarSupported = supported;
+        }
+
+        /**
+         * 强制 broadcast 返回指定失败码；传 null 恢复成功
+         */
+        public void failBroadcastWith(PlatformResultCode code) {
+            this.broadcastFailure = code;
+        }
+
+        /**
+         * 强制 sendMessage 返回指定失败码；传 null 恢复成功
+         *
+         * <p>由于 {@code sendPrivateMessage} 在基类中是 final 且会透传发送结果，
+         * 本开关可以间接驱动私聊的失败路径。
+         */
+        public void failSendWith(PlatformResultCode code) {
+            this.sendFailure = code;
         }
 
         public List<String> getBroadcasts() {
@@ -169,6 +320,16 @@ public final class PlatformStubs {
             synchronized (privateMessages) {
                 return new ArrayList<>(privateMessages);
             }
+        }
+
+        /**
+         * 清空全部录制内容（便于用例之间复用同一个上下文实例）
+         */
+        public void clearRecordings() {
+            broadcasts.clear();
+            actionBars.clear();
+            titleCalls.clear();
+            privateMessages.clear();
         }
     }
 }

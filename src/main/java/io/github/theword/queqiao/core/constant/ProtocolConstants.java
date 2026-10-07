@@ -24,6 +24,8 @@ public final class ProtocolConstants {
         public static final String TITLE_DURATION_NEGATIVE = "Title 的 fade_in / stay / fade_out 不能为负数";
         public static final String TITLE_DURATION_TOO_LARGE = "Title 的 fade_in / stay / fade_out 超出允许上限（72000 ticks）";
         public static final String SEND_COMMAND_UNSUPPORTED = "send_command is not supported now";
+        public static final String TITLE_UNSUPPORTED = "当前平台未实现标题功能";
+        public static final String ACTIONBAR_UNSUPPORTED = "当前平台未实现 ActionBar 功能";
         public static final String PARSE_MESSAGE_FAILED = "解析消息失败";
         public static final String PARSE_DATA_FAILED = "解析请求数据失败";
         public static final String MISSING_API = "请求缺少 api 字段";

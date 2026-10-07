@@ -1,11 +1,10 @@
 package io.github.theword.queqiao.core.handle;
 
+import io.github.theword.queqiao.core.api.Api;
 import io.github.theword.queqiao.core.constant.CommonConstants;
 import io.github.theword.queqiao.core.constant.ProtocolConstants;
 import io.github.theword.queqiao.core.payload.BasePayload;
 import io.github.theword.queqiao.core.protocol.ProtocolRouter;
-import io.github.theword.queqiao.core.protocol.RconCommandExecutor;
-import io.github.theword.queqiao.core.protocol.handler.status.ServerStatusCollector;
 import io.github.theword.queqiao.core.response.Response;
 import io.github.theword.queqiao.core.utils.LogSanitizer;
 import io.github.theword.queqiao.core.utils.RuntimeUtils;
@@ -14,6 +13,7 @@ import com.google.gson.JsonParseException;
 import org.java_websocket.WebSocket;
 import org.slf4j.Logger;
 
+import java.util.Collection;
 import java.util.Locale;
 import java.util.Objects;
 
@@ -27,8 +27,8 @@ import java.util.Objects;
  * 因此会被多个连接、多个线程并发调用。
  *
  * <p>本类构造后即不可变：字段全部 {@code final}，
- * {@link ProtocolRouter} 的处理器表也只在构造阶段写入、之后只读；
- * 各处理器实现必须无状态（见 {@code AbstractProtocolHandler}）。
+ * {@link ProtocolRouter} 的 api 表也只在构造阶段建好、之后只读；
+ * 各 Api 实现必须无状态（见 {@link Api}）。
  * 因此并发调用是安全的，且<b>不存在锁</b>——不同连接之间不会相互串行化。
  *
  * <p>顺序说明：单个连接内的请求处理顺序由该连接的读线程串行保证，
@@ -55,18 +55,22 @@ public class HandleProtocolMessage {
      */
     private final RuntimeUtils utils;
 
+    /**
+     * @param logger 日志实现
+     * @param gson   JSON 实现
+     * @param apis   要启用的 Api 集合；装配方决定注册哪些
+     * @param utils  Runtime 作用域辅助能力，不得为 null
+     */
     public HandleProtocolMessage(
             Logger logger,
             Gson gson,
-            HandleApiService handleApiService,
-            RconCommandExecutor rconCommandExecutor,
-            RuntimeUtils utils,
-            ServerStatusCollector serverStatusCollector) {
+            Collection<Api<?, ?>> apis,
+            RuntimeUtils utils) {
         this.logger = logger;
         this.gson = gson;
         // 与 WebsocketManager 一致：注入依赖为 null 属接线缺陷，在此快速失败
         this.utils = Objects.requireNonNull(utils, "utils");
-        this.protocolRouter = new ProtocolRouter(logger, handleApiService, rconCommandExecutor, serverStatusCollector);
+        this.protocolRouter = new ProtocolRouter(logger, apis);
     }
 
     /**

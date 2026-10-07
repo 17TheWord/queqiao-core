@@ -1,9 +1,9 @@
 package io.github.theword.queqiao.core.runtime;
 
 import io.github.theword.queqiao.core.config.ConfigKeys;
-import io.github.theword.queqiao.core.handle.HandleApiService;
-import io.github.theword.queqiao.core.handle.HandleCommandReturnMessageService;
+import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
 import io.github.theword.queqiao.core.protocol.handler.status.ServerStatusCollector;
+import io.github.theword.queqiao.core.support.PlatformStubs;
 import io.github.theword.queqiao.core.response.PrivateMessageResponse;
 import com.google.gson.JsonElement;
 import org.junit.jupiter.api.DisplayName;
@@ -43,39 +43,14 @@ class QueQiaoRuntimeIsolationTest {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(QueQiaoRuntimeIsolationTest.class);
 
-    private static final HandleApiService NOOP_API_SERVICE = new HandleApiService() {
-        @Override
-        public void handleBroadcastMessage(JsonElement jsonData) {
-        }
-
-        @Override
-        public void handleSendTitleMessage(JsonElement titlePayload, JsonElement subTitlePayload, int fadeIn, int stay, int fadeOut) {
-        }
-
-        @Override
-        public void handleSendActionBarMessage(JsonElement jsonData) {
-        }
-
-        @Override
-        public PrivateMessageResponse handleSendPrivateMessage(String nickname, UUID uuid, JsonElement jsonData) {
-            return null;
-        }
-    };
-
-    private static final HandleCommandReturnMessageService NOOP_RETURN_MESSAGE_SERVICE =
-            new HandleCommandReturnMessageService() {
-                @Override
-                public void handleCommandReturnMessage(Object commandReturner, String message) {
-                }
-
-                @Override
-                public boolean hasPermission(Object commandReturner, String permissionNode) {
-                    return true;
-                }
-            };
+    /**
+     * 空平台上下文：不实现任何行为，仅用于验证 Runtime 自身的状态隔离
+     */
+    private static final AbstractPlatformContext<?, ?, ?> NOOP_PLATFORM_CONTEXT =
+            PlatformStubs.noopPlatformContext();
 
     private static QueQiaoRuntime newRuntime() {
-        return QueQiaoRuntime.create(false, "1.20.1", "test", NOOP_API_SERVICE, NOOP_RETURN_MESSAGE_SERVICE);
+        return QueQiaoRuntime.create(null, NOOP_PLATFORM_CONTEXT, null);
     }
 
     @Test
