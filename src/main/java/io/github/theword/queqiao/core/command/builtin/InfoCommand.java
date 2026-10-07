@@ -1,9 +1,9 @@
-package io.github.theword.queqiao.core.command.subCommand.server;
+package io.github.theword.queqiao.core.command.builtin;
 
-import io.github.theword.queqiao.core.command.SubCommand;
+import io.github.theword.queqiao.core.command.CommandExecutionContext;
+import io.github.theword.queqiao.core.command.CommandNode;
 import io.github.theword.queqiao.core.config.ConfigKeys;
 import io.github.theword.queqiao.core.config.Config;
-import io.github.theword.queqiao.core.platform.CommandSource;
 import io.github.theword.queqiao.core.utils.Tool;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
 import io.github.theword.queqiao.core.websocket.WsServer;
@@ -15,7 +15,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
-public class InfoCommand extends SubCommand {
+public class InfoCommand<NCS> extends CommandNode<NCS> {
 
     /**
      * 配置运行时状态（与 Runtime 共用同一实例，reload 后自动生效）
@@ -64,24 +64,24 @@ public class InfoCommand extends SubCommand {
      * （判空 / 取数量 / 遍历），三次之间集合可能变化，
      * 会出现"显示 N 个连接、却列出 M 条"的自相矛盾输出。
      *
-     * @param source 命令来源
+     * @param context 命令执行上下文
      * @param args            命令参数
      */
     @Override
-    protected void onExecute(CommandSource source, List<String> args) {
+    protected void onExecute(CommandExecutionContext<NCS> context, List<String> args) {
         if (!config.get(ConfigKeys.WebSocket.ENABLE)) {
-            source.reply("Websocket Server 配置项未启用，如需开启，请在 config.yml 中启用 WebsocketServer 配置项");
-            source.reply(Tool.format("配置项中地址为 {}:{}", config.get(ConfigKeys.WebSocket.HOST), config.get(ConfigKeys.WebSocket.PORT)));
+            context.reply("Websocket Server 配置项未启用，如需开启，请在 config.yml 中启用 WebsocketServer 配置项");
+            context.reply(Tool.format("配置项中地址为 {}:{}", config.get(ConfigKeys.WebSocket.HOST), config.get(ConfigKeys.WebSocket.PORT)));
             return;
         }
 
         WsServer wsServer = websocketManager.getWsServer();
         if (wsServer == null) {
-            source.reply("Websocket Server 为 null，查询失败");
+            context.reply("Websocket Server 为 null，查询失败");
             return;
         }
 
-        source.reply(Tool.format(
+        context.reply(Tool.format(
                         "当前 Websocket Server 已开启，监听地址为 {}:{}",
                         wsServer.getAddress().getHostString(),
                         wsServer.getPort()));
@@ -89,20 +89,20 @@ public class InfoCommand extends SubCommand {
         // 取一次快照后统一使用，避免三次读取之间集合变化导致输出自相矛盾
         List<WebSocket> connections = new ArrayList<>(wsServer.getConnections());
         if (connections.isEmpty()) {
-            source.reply("当前暂无 Websocket 连接到该 Server");
+            context.reply("当前暂无 Websocket 连接到该 Server");
             return;
         }
 
-        source.reply(Tool.format("当前 Websocket Server 已有 {} 个连接", connections.size()));
+        context.reply(Tool.format("当前 Websocket Server 已有 {} 个连接", connections.size()));
 
         int count = 0;
         for (WebSocket webSocket : connections) {
             count++;
             InetSocketAddress remoteAddress = webSocket.getRemoteSocketAddress();
             if (remoteAddress == null) {
-                source.reply(Tool.format("{} 来自未知地址的连接", count));
+                context.reply(Tool.format("{} 来自未知地址的连接", count));
             } else {
-                source.reply(Tool.format("{} 来自 {}:{} 的连接", count, remoteAddress.getHostString(), remoteAddress.getPort()));
+                context.reply(Tool.format("{} 来自 {}:{} 的连接", count, remoteAddress.getHostString(), remoteAddress.getPort()));
             }
         }
     }

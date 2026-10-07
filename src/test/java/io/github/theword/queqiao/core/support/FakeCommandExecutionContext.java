@@ -1,36 +1,42 @@
 package io.github.theword.queqiao.core.support;
 
-import io.github.theword.queqiao.core.platform.CommandSource;
+import io.github.theword.queqiao.core.command.CommandExecutionContext;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
 /**
- * 记录型命令来源测试替身
+ * 记录型命令执行上下文测试替身
  *
- * <p>记录收到的每一条回执，并可用固定值回答权限判定——
- * 用于验证命令层"权限通过 / 权限拒绝"两条路径，以及回执内容是否正确。
+ * <p>记录收到的每一条回执，并可用固定值回答权限判定；
+ * 同时把 {@code nativeSource} 原样保存，用于验证"命令内取到的就是同一个对象"。
  *
  * <p>权限返回固定值（而不是按节点判断）是有意的：命令层只需要一个可控的布尔结果，
  * 按节点判断属于平台实现细节，由平台自己的测试覆盖。
+ *
+ * @param <NCS> Native Command Source，平台原生命令来源类型
  */
-public final class FakeCommandSource implements CommandSource {
+public final class FakeCommandExecutionContext<NCS> extends CommandExecutionContext<NCS> {
 
     private final boolean permissionGranted;
     private final List<String> replies = Collections.synchronizedList(new ArrayList<>());
 
     /**
-     * 构造默认允许全部权限的命令来源
+     * 构造默认允许全部权限的命令执行上下文
+     *
+     * @param nativeSource 平台原生命令来源，不得为 null
      */
-    public FakeCommandSource() {
-        this(true);
+    public FakeCommandExecutionContext(NCS nativeSource) {
+        this(nativeSource, true);
     }
 
     /**
+     * @param nativeSource      平台原生命令来源，不得为 null
      * @param permissionGranted {@link #hasPermission(String)} 的固定返回值
      */
-    public FakeCommandSource(boolean permissionGranted) {
+    public FakeCommandExecutionContext(NCS nativeSource, boolean permissionGranted) {
+        super(nativeSource);
         this.permissionGranted = permissionGranted;
     }
 

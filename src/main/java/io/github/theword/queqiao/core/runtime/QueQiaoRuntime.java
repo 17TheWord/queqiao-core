@@ -15,14 +15,12 @@ import io.github.theword.queqiao.core.config.io.ConfigWriter;
 import io.github.theword.queqiao.core.api.Api;
 import io.github.theword.queqiao.core.api.DefaultApis;
 import io.github.theword.queqiao.core.constant.BaseConstant;
-import io.github.theword.queqiao.core.constant.CommandConstant;
 import io.github.theword.queqiao.core.constant.WebsocketConstantMessage;
 import io.github.theword.queqiao.core.event.base.BaseEvent;
 import io.github.theword.queqiao.core.exception.rcon.RconException;
 import io.github.theword.queqiao.core.handle.HandleProtocolMessage;
 import io.github.theword.queqiao.core.localize.LanguageService;
 import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
-import io.github.theword.queqiao.core.platform.CommandSource;
 import io.github.theword.queqiao.core.protocol.handler.status.ServerStatusCollector;
 import io.github.theword.queqiao.core.rcon.RconClient;
 import io.github.theword.queqiao.core.utils.GsonUtils;
@@ -367,11 +365,14 @@ public final class QueQiaoRuntime {
      * {@code STOPPED} / {@code FAILED} 状态一律抛出 {@link IllegalStateException}。
      *
      * <p>注意：命令层在 Runtime 关闭后仍可能持有旧的命令树；此时触发 reload 会抛出
-     * 上述异常，并由 {@code SubCommand.execute} 捕获后回显"命令执行出错"。
+     * 上述异常，并由命令层的 {@code execute} 捕获后回显"命令执行出错"。
      *
-     * @param source 命令来源；无实际命令来源时使用 CommandSource.NONE
+     * <p><b>不回执</b>：Runtime 不负责向命令执行者发送消息。重载过程中的进度消息
+     * 作为 {@link ReloadResult} 返回，由调用方（通常是 {@code ReloadCommand}）决定如何展示。
+     *
+     * @return 重载结果，携带本应展示给用户的进度消息
      */
-    public void reload(CommandSource source) {
+    public ReloadResult reload() {
         synchronized (lifecycleLock) {
             if (state.get() != RuntimeState.RUNNING) {
                 throw new IllegalStateException("QueQiaoRuntime 当前状态不允许 reload: " + state.get());
@@ -385,12 +386,13 @@ public final class QueQiaoRuntime {
             }
             serverStatusCollector.initPingTarget();
             serverStatusCollector.updateRefreshInterval(config.get(ConfigKeys.Status.REFRESH_INTERVAL_SECONDS));
+            List<String> messages = new ArrayList<>();
             WebsocketManager manager = websocketManager;
             if (manager != null) {
-                manager.restart(config, source);
+                messages.addAll(manager.restart(config));
             }
             restartRconClient();
-            source.reply(CommandConstant.RELOAD_CONFIG);
+            return new ReloadResult(messages);
         }
     }
 
@@ -442,7 +444,7 @@ public final class QueQiaoRuntime {
 
         WebsocketManager manager = websocketManager;
         if (manager != null) {
-            manager.stop(1000, WebsocketConstantMessage.SHUTDOWN, CommandSource.NONE);
+            manager.stop(1000, WebsocketConstantMessage.SHUTDOWN);
             websocketManager = null;
         }
 
@@ -483,7 +485,7 @@ public final class QueQiaoRuntime {
 
     private void initWebsocketManager() {
         websocketManager = new WebsocketManager(logger, gson, handleProtocolMessage, config, utils);
-        websocketManager.start(CommandSource.NONE);
+        websocketManager.start();
     }
 
     private void initRconClient() {

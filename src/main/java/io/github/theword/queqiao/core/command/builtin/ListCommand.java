@@ -1,9 +1,9 @@
-package io.github.theword.queqiao.core.command.subCommand.client;
+package io.github.theword.queqiao.core.command.builtin;
 
-import io.github.theword.queqiao.core.command.SubCommand;
+import io.github.theword.queqiao.core.command.CommandExecutionContext;
+import io.github.theword.queqiao.core.command.CommandNode;
 import io.github.theword.queqiao.core.config.ConfigKeys;
 import io.github.theword.queqiao.core.config.Config;
-import io.github.theword.queqiao.core.platform.CommandSource;
 import io.github.theword.queqiao.core.utils.Tool;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
 import io.github.theword.queqiao.core.websocket.WsClient;
@@ -13,7 +13,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
-public class ListCommand extends SubCommand {
+public class ListCommand<NCS> extends CommandNode<NCS> {
 
     /**
      * 配置运行时状态（与 Runtime 共用同一实例，reload 后自动生效）
@@ -67,29 +67,29 @@ public class ListCommand extends SubCommand {
      *         而"已启用"分支用 {@code i}（从 0 起），同一条命令的编号规则随配置变化</li>
      * </ol>
      *
-     * @param source 命令来源
+     * @param context 命令执行上下文
      * @param args            命令参数
      * @since 0.1.5
      */
     @Override
-    protected void onExecute(CommandSource source, List<String> args) {
+    protected void onExecute(CommandExecutionContext<NCS> context, List<String> args) {
         if (!config.get(ConfigKeys.WebSocketClient.ENABLE)) {
             List<String> urlList = new ArrayList<>(config.get(ConfigKeys.WebSocketClient.URL_LIST));
-            source.reply("Websocket Client 配置项未启用，如需开启，请在 config.yml 中启用 WebsocketClient 配置项");
-            source.reply(Tool.format("配置文件中连接列表如下共 {} 个 Client", urlList.size()));
+            context.reply("Websocket Client 配置项未启用，如需开启，请在 config.yml 中启用 WebsocketClient 配置项");
+            context.reply(Tool.format("配置文件中连接列表如下共 {} 个 Client", urlList.size()));
             for (int i = 0; i < urlList.size(); i++) {
-                source.reply(Tool.format("{} 连接至 {}", i + 1, urlList.get(i)));
+                context.reply(Tool.format("{} 连接至 {}", i + 1, urlList.get(i)));
             }
             return;
         }
 
         List<WsClient> wsClientList = websocketManager.getWsClientList();
 
-        source.reply(Tool.format("Websocket Client 列表，共 {} 个 Client", wsClientList.size()));
+        context.reply(Tool.format("Websocket Client 列表，共 {} 个 Client", wsClientList.size()));
 
         for (int i = 0; i < wsClientList.size(); i++) {
             WsClient wsClient = wsClientList.get(i);
-            source.reply(Tool.format(
+            context.reply(Tool.format(
                             "{} 连接至 {} 的 Client，状态：{}",
                             i + 1,
                             wsClient.getURI(),

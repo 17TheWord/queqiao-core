@@ -18,11 +18,11 @@ import io.github.theword.queqiao.core.event.model.PlayerModel;
  * <p><b>职责边界（重要）</b>：本类只描述"平台本身能做什么"——
  * 平台元数据、玩家查询、组件转换、广播、私聊、Title、ActionBar。
  * <b>不负责</b>命令来源相关能力：回执（{@code reply}）与权限判定已归属
- * {@link CommandSource}，命令来源的类型转换也不在本类。
+ * {@code CommandExecutionContext}，命令来源的类型转换也不在本类。
  * 两者职责完全分离：
  * <pre>
  * AbstractPlatformContext   平台整体能力
- * CommandSource             命令来源能力（谁发起的 / 如何回复 / 其权限）
+ * CommandExecutionContext   命令来源能力（谁发起的 / 如何回复 / 其权限）
  * </pre>
  *
  * <p><b>结果表达</b>：平台操作统一返回 {@link PlatformResult}，

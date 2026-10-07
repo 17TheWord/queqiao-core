@@ -8,7 +8,7 @@ package io.github.theword.queqiao.core.constant;
 public class CommandConstant {
     public static final String RELOAD_CONFIG = "加载配置文件完成";
 
-    public static final String RECONNECT_MESSAGE = "正在尝试重连 %s 的 WebSocket 客户端...";
+    public static final String RECONNECT_MESSAGE = "正在尝试重连 {} 的 WebSocket 客户端...";
     public static final String RECONNECT_NOT_OPEN_CLIENT = "正在重连未打开的 Websocket Client...";
     public static final String RECONNECT_ALL_CLIENT = "正在重连所有 Websocket Client...";
     public static final String RECONNECT_NO_CLIENT_NEED_RECONNECT = "没有客户端需要重连";

@@ -6,7 +6,6 @@ import io.github.theword.queqiao.core.config.codec.StringCodec;
 import io.github.theword.queqiao.core.event.PlayerChatEvent;
 import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
 import io.github.theword.queqiao.core.protocol.handler.status.ServerStatusCollector;
-import io.github.theword.queqiao.core.platform.CommandSource;
 import io.github.theword.queqiao.core.support.PlatformStubs;
 import io.github.theword.queqiao.core.response.PrivateMessageResponse;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
@@ -253,17 +252,17 @@ class QueQiaoRuntimeLifecycleTest {
             QueQiaoRuntime created = newRuntime();
 
             // NEW
-            assertThrows(IllegalStateException.class, () -> created.reload(CommandSource.NONE));
+            assertThrows(IllegalStateException.class, () -> created.reload());
             assertEquals(RuntimeState.NEW, created.getState(), "被拒的 reload 不应改变状态");
 
             // RUNNING
             created.start();
-            created.reload(CommandSource.NONE);
+            created.reload();
             assertEquals(RuntimeState.RUNNING, created.getState(), "reload 不应改变状态");
 
             // STOPPED
             created.shutdown();
-            assertThrows(IllegalStateException.class, () -> created.reload(CommandSource.NONE));
+            assertThrows(IllegalStateException.class, () -> created.reload());
             assertEquals(RuntimeState.STOPPED, created.getState(), "被拒的 reload 不应改变状态");
         }
     }

@@ -1,12 +1,13 @@
 package io.github.theword.queqiao.core.command;
 
-import io.github.theword.queqiao.core.command.subCommand.client.ListCommand;
-import io.github.theword.queqiao.core.command.subCommand.client.ReconnectCommand;
-import io.github.theword.queqiao.core.command.subCommand.server.InfoCommand;
+import io.github.theword.queqiao.core.command.builtin.ListCommand;
+import io.github.theword.queqiao.core.command.builtin.ReconnectCommand;
+import io.github.theword.queqiao.core.command.builtin.HelpCommand;
+import io.github.theword.queqiao.core.command.builtin.InfoCommand;
 import io.github.theword.queqiao.core.constant.CommandConstant;
 import io.github.theword.queqiao.core.config.io.ConfigStore;
 import io.github.theword.queqiao.core.runtime.QueQiaoRuntime;
-import io.github.theword.queqiao.core.support.FakeCommandSource;
+import io.github.theword.queqiao.core.support.FakeCommandExecutionContext;
 import io.github.theword.queqiao.core.support.PlatformStubs;
 import org.java_websocket.client.WebSocketClient;
 import org.java_websocket.handshake.ServerHandshake;
@@ -31,6 +32,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -62,9 +65,14 @@ class CommandLayerTest {
     private static final String SERVER_NAME = "TestServer";
 
     /**
+     * 测试用的平台原生命令来源占位对象
+     */
+    private static final Object NATIVE_SOURCE = new Object();
+
+    /**
      * 记录型平台上下文：仅供 Runtime 构造使用。
      *
-     * <p>命令回执已不再经过平台上下文——它走 {@link FakeCommandSource}。
+     * <p>命令回执已不再经过平台上下文——它走 {@link FakeCommandExecutionContext}。
      */
     private final PlatformStubs.RecordingPlatformContext PLATFORM =
             PlatformStubs.recordingPlatformContext();
@@ -116,8 +124,8 @@ class CommandLayerTest {
                         10_000L,
                         "服务端应登记 2 个连接");
 
-                FakeCommandSource source = new FakeCommandSource();
-                new InfoCommand(LOGGER, runtime.getConfig(), runtime.getWebsocketManager())
+                FakeCommandExecutionContext<Object> source = new FakeCommandExecutionContext<>(NATIVE_SOURCE);
+                new InfoCommand<>(LOGGER, runtime.getConfig(), runtime.getWebsocketManager())
                         .execute(source, Collections.emptyList());
                 List<String> messages = source.getReplies();
 
@@ -145,8 +153,8 @@ class CommandLayerTest {
         try (ConfigFixture ignored = new ConfigFixture(serverPort, deadPort)) {
             startRuntime();
 
-            FakeCommandSource source = new FakeCommandSource();
-            new ListCommand(LOGGER, runtime.getConfig(), runtime.getWebsocketManager())
+            FakeCommandExecutionContext<Object> source = new FakeCommandExecutionContext<>(NATIVE_SOURCE);
+            new ListCommand<>(LOGGER, runtime.getConfig(), runtime.getWebsocketManager())
                     .execute(source, Collections.emptyList());
             List<String> messages = source.getReplies();
 
@@ -172,8 +180,8 @@ class CommandLayerTest {
         try (ConfigFixture ignored = new ConfigFixture(serverPort, deadPort)) {
             startRuntime();
 
-            FakeCommandSource source = new FakeCommandSource();
-            new ReconnectCommand(LOGGER, runtime.getWebsocketManager())
+            FakeCommandExecutionContext<Object> source = new FakeCommandExecutionContext<>(NATIVE_SOURCE);
+            new ReconnectCommand<>(LOGGER, runtime.getWebsocketManager())
                     .reconnect(source, false);
             List<String> messages = source.getReplies();
 
@@ -187,6 +195,150 @@ class CommandLayerTest {
             assertTrue(
                     messages.stream().filter(message -> message.contains("正在尝试重连")).count() == 2,
                     "两个未连接的客户端都应被安排重连，实际=" + messages);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 路由（§26.6）
+    // ------------------------------------------------------------------
+
+    /**
+     * 构造命令路由：依赖全部来自当前 Runtime（与平台侧装配方式一致）
+     */
+    private CommandRouter<Object> newRouter() {
+        return new CommandRouter<>(
+                LOGGER, runtime.getConfig(), runtime.getWebsocketManager(), runtime::reload);
+    }
+
+    @Test
+    @DisplayName("路由：空参数落到根命令")
+    void routingWithEmptyArgsHitsRoot() throws Exception {
+        int serverPort = findFreePort();
+        int deadPort = findFreePort();
+
+        try (ConfigFixture ignored = new ConfigFixture(serverPort, deadPort)) {
+            startRuntime();
+
+            FakeCommandExecutionContext<Object> context = new FakeCommandExecutionContext<>(NATIVE_SOURCE);
+            int signal = newRouter().execute(context, new String[0]);
+
+            assertTrue(
+                    context.hasReplyContaining("请使用帮助命令查看可用子命令"),
+                    "空参数应执行根命令，实际=" + context.getReplies());
+            assertTrue(signal == CommandConstant.SUCCESS_SIGNAL, "根命令应返回成功信号");
+        }
+    }
+
+    @Test
+    @DisplayName("路由：一级子命令 help")
+    void routingHitsFirstLevelChild() throws Exception {
+        int serverPort = findFreePort();
+        int deadPort = findFreePort();
+
+        try (ConfigFixture ignored = new ConfigFixture(serverPort, deadPort)) {
+            startRuntime();
+
+            FakeCommandExecutionContext<Object> context = new FakeCommandExecutionContext<>(NATIVE_SOURCE);
+            newRouter().execute(context, new String[]{"help"});
+
+            assertTrue(
+                    context.hasReplyContaining("获取命令帮助"),
+                    "help 应输出命令树（含自身描述），实际=" + context.getReplies());
+        }
+    }
+
+    @Test
+    @DisplayName("路由：二级子命令 client list")
+    void routingHitsNestedChild() throws Exception {
+        int serverPort = findFreePort();
+        int deadPort = findFreePort();
+
+        try (ConfigFixture ignored = new ConfigFixture(serverPort, deadPort)) {
+            startRuntime();
+
+            FakeCommandExecutionContext<Object> context = new FakeCommandExecutionContext<>(NATIVE_SOURCE);
+            newRouter().execute(context, new String[]{"client", "list"});
+
+            assertTrue(
+                    context.hasReplyContaining("共 2 个 Client"),
+                    "client list 应输出客户端列表，实际=" + context.getReplies());
+        }
+    }
+
+    @Test
+    @DisplayName("路由：未知子命令回退到已匹配的最深节点（不抛异常）")
+    void routingFallsBackToDeepestMatchedNode() throws Exception {
+        int serverPort = findFreePort();
+        int deadPort = findFreePort();
+
+        try (ConfigFixture ignored = new ConfigFixture(serverPort, deadPort)) {
+            startRuntime();
+
+            FakeCommandExecutionContext<Object> context = new FakeCommandExecutionContext<>(NATIVE_SOURCE);
+            int signal = newRouter().execute(context, new String[]{"__unknown__"});
+
+            assertTrue(
+                    context.hasReplyContaining("请使用帮助命令查看可用子命令"),
+                    "未知子命令应回退到根命令，实际=" + context.getReplies());
+            assertTrue(signal == CommandConstant.SUCCESS_SIGNAL);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 格式化占位符（§6）
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("client reconnect 的回执包含实际 WebSocket URI，且无残留占位符")
+    void reconnectReplyContainsActualUri() throws Exception {
+        int serverPort = findFreePort();
+        int deadPort = findFreePort();
+
+        try (ConfigFixture ignored = new ConfigFixture(serverPort, deadPort)) {
+            startRuntime();
+
+            FakeCommandExecutionContext<Object> context = new FakeCommandExecutionContext<>(NATIVE_SOURCE);
+            new ReconnectCommand<>(LOGGER, runtime.getWebsocketManager()).reconnect(context, false);
+
+            List<String> messages = context.getReplies();
+            String expectedUrlPrefix = "ws://127.0.0.1:" + deadPort;
+
+            assertTrue(
+                    messages.stream().anyMatch(message -> message.contains(expectedUrlPrefix)),
+                    "回执必须包含实际 URI（" + expectedUrlPrefix + "），实际=" + messages);
+            assertTrue(
+                    messages.stream().noneMatch(message -> message.contains("{}")),
+                    "回执不得残留未替换的 {} 占位符，实际=" + messages);
+            assertTrue(
+                    messages.stream().noneMatch(message -> message.contains("%s")),
+                    "回执不得残留未替换的 %s 占位符，实际=" + messages);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 注册生命周期：首次 dispatch 自动冻结（§4）
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("首次 execute 后命令树被冻结，结构不可再修改")
+    void routerFreezesTreeOnFirstDispatch() throws Exception {
+        int serverPort = findFreePort();
+        int deadPort = findFreePort();
+
+        try (ConfigFixture ignored = new ConfigFixture(serverPort, deadPort)) {
+            startRuntime();
+
+            CommandRouter<Object> router = newRouter();
+            assertFalse(router.getRootCommand().isFrozen(), "构造后不应自动冻结");
+
+            FakeCommandExecutionContext<Object> context = new FakeCommandExecutionContext<>(NATIVE_SOURCE);
+            router.execute(context, new String[]{"help"});
+
+            assertTrue(router.getRootCommand().isFrozen(), "首次 execute 后应已冻结");
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> router.getRootCommand().addChild(new HelpCommand<>(LOGGER)),
+                    "冻结后不得再注册子命令");
         }
     }
 

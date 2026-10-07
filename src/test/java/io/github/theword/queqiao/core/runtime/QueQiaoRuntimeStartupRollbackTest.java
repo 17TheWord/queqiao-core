@@ -4,7 +4,6 @@ import io.github.theword.queqiao.core.config.exception.ConfigValidationException
 import io.github.theword.queqiao.core.config.io.ConfigStore;
 import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
 import io.github.theword.queqiao.core.protocol.handler.status.ServerStatusCollector;
-import io.github.theword.queqiao.core.platform.CommandSource;
 import io.github.theword.queqiao.core.support.PlatformStubs;
 import io.github.theword.queqiao.core.response.PrivateMessageResponse;
 import com.google.gson.JsonElement;
@@ -123,7 +122,7 @@ class QueQiaoRuntimeStartupRollbackTest {
             runtime = created;
 
             assertThrows(ConfigValidationException.class, created::start);
-            assertThrows(IllegalStateException.class, () -> created.reload(CommandSource.NONE));
+            assertThrows(IllegalStateException.class, () -> created.reload());
             assertEquals(RuntimeState.FAILED, created.getState(), "被拒的 reload 不应改变状态");
         }
     }

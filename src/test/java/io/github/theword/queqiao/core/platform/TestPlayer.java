@@ -5,7 +5,7 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class TestPlayer extends TestCommandSource {
+public class TestPlayer extends TestNativeCommandSource {
 
     private static final Logger log = LoggerFactory.getLogger(TestPlayer.class);
 

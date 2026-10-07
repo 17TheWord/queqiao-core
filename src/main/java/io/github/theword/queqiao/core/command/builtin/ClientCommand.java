@@ -1,14 +1,12 @@
-package io.github.theword.queqiao.core.command.subCommand;
+package io.github.theword.queqiao.core.command.builtin;
 
-import io.github.theword.queqiao.core.command.SubCommand;
-import io.github.theword.queqiao.core.command.subCommand.client.ListCommand;
-import io.github.theword.queqiao.core.command.subCommand.client.ReconnectCommand;
+import io.github.theword.queqiao.core.command.CommandExecutionContext;
+import io.github.theword.queqiao.core.command.CommandNode;
 import io.github.theword.queqiao.core.config.Config;
-import io.github.theword.queqiao.core.platform.CommandSource;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
 import org.slf4j.Logger;
 
-public class ClientCommand extends SubCommand {
+public class ClientCommand<NCS> extends CommandNode<NCS> {
 
     public ClientCommand(
             Logger logger,
@@ -16,8 +14,8 @@ public class ClientCommand extends SubCommand {
             WebsocketManager websocketManager) {
         super(logger);
         // 注册子命令
-        addChild(new ListCommand(logger, config, websocketManager));
-        addChild(new ReconnectCommand(logger, websocketManager));
+        addChild(new ListCommand<>(logger, config, websocketManager));
+        addChild(new ReconnectCommand<>(logger, websocketManager));
     }
 
     /**
@@ -46,11 +44,11 @@ public class ClientCommand extends SubCommand {
      *
      * <p>Pass
      *
-     * @param source 命令来源
+     * @param context 命令执行上下文
      * @param args            命令参数
      */
     @Override
-    protected void onExecute(CommandSource source, java.util.List<String> args) {
-        sendCommandTree(source, this);
+    protected void onExecute(CommandExecutionContext<NCS> context, java.util.List<String> args) {
+        sendCommandTree(context, this);
     }
 }

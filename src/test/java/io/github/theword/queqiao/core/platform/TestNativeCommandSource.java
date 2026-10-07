@@ -3,9 +3,9 @@ package io.github.theword.queqiao.core.platform;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class TestCommandSource {
+public class TestNativeCommandSource {
 
-    private static final Logger log = LoggerFactory.getLogger(TestCommandSource.class);
+    private static final Logger log = LoggerFactory.getLogger(TestNativeCommandSource.class);
 
     public boolean hasPermission(String permission) {
         if (permission.equals("permission")) {

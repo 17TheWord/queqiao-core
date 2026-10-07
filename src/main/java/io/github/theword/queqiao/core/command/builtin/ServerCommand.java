@@ -1,22 +1,21 @@
-package io.github.theword.queqiao.core.command.subCommand;
+package io.github.theword.queqiao.core.command.builtin;
 
-import io.github.theword.queqiao.core.command.SubCommand;
-import io.github.theword.queqiao.core.command.subCommand.server.InfoCommand;
+import io.github.theword.queqiao.core.command.CommandExecutionContext;
+import io.github.theword.queqiao.core.command.CommandNode;
 import io.github.theword.queqiao.core.config.Config;
-import io.github.theword.queqiao.core.platform.CommandSource;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
 import org.slf4j.Logger;
 
 import java.util.List;
 
-public class ServerCommand extends SubCommand {
+public class ServerCommand<NCS> extends CommandNode<NCS> {
 
     public ServerCommand(
             Logger logger,
             Config config,
             WebsocketManager websocketManager) {
         super(logger);
-        addChild(new InfoCommand(logger, config, websocketManager));
+        addChild(new InfoCommand<>(logger, config, websocketManager));
     }
 
     /**
@@ -45,11 +44,11 @@ public class ServerCommand extends SubCommand {
      *
      * <p>位于本命令 pass
      *
-     * @param source 命令来源
+     * @param context 命令执行上下文
      * @param args            命令参数
      */
     @Override
-    protected void onExecute(CommandSource source, List<String> args) {
-        sendCommandTree(source, this);
+    protected void onExecute(CommandExecutionContext<NCS> context, List<String> args) {
+        sendCommandTree(context, this);
     }
 }
