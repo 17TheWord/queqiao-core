@@ -15,7 +15,6 @@ import org.slf4j.LoggerFactory;
 
 import java.io.UnsupportedEncodingException;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -51,12 +50,6 @@ class WsServerHandshakeAuthTest {
     private static final String ACCESS_TOKEN = "s3cr3t-token";
     private static final int CLOSE_CODE_POLICY_VIOLATION = 1008;
 
-    private static int findFreePort() throws Exception {
-        try (ServerSocket socket = new ServerSocket(0)) {
-            socket.setReuseAddress(true);
-            return socket.getLocalPort();
-        }
-    }
 
     private static int countOccurrences(String text, String token) {
         int count = 0;
@@ -90,10 +83,10 @@ class WsServerHandshakeAuthTest {
     @Test
     @DisplayName("错误 token 以 1008 被拒绝，正确 token 被接受")
     void rejectsWrongTokenAndAcceptsCorrectToken() throws Exception {
-        int port = findFreePort();
-        WsServer server = new WsServer(
-                new InetSocketAddress("127.0.0.1", port), LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, ACCESS_TOKEN, true);
+        StartedWsServer server = new StartedWsServer(LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, ACCESS_TOKEN);
         server.start();
+        assertTrue(server.awaitStarted(10_000L), "服务端应在超时前完成启动");
+        int port = server.getPort();
 
         ProbeClient wrongTokenClient = new ProbeClient(port, SERVER_NAME, "Bearer wrong-token");
         ProbeClient correctTokenClient = new ProbeClient(port, SERVER_NAME, "Bearer " + ACCESS_TOKEN);
@@ -118,13 +111,13 @@ class WsServerHandshakeAuthTest {
     @Test
     @DisplayName("真实 WebSocket 请求经过 WsServer 分发到平台上下文")
     void websocketRequestReachesPlatformContext() throws Exception {
-        int port = findFreePort();
         PlatformStubs.RecordingPlatformContext platformContext = PlatformStubs.recordingPlatformContext();
         HandleProtocolMessage dispatcher = PlatformStubs.newDispatcher(
                 LOGGER, GSON, platformContext, PlatformStubs.rconExecutorReturning(""));
-        WsServer server = new WsServer(
-                new InetSocketAddress("127.0.0.1", port), LOGGER, dispatcher, SERVER_NAME, ACCESS_TOKEN, true);
+        StartedWsServer server = new StartedWsServer(LOGGER, dispatcher, SERVER_NAME, ACCESS_TOKEN);
         server.start();
+        assertTrue(server.awaitStarted(10_000L), "服务端应在超时前完成启动");
+        int port = server.getPort();
 
         ProbeClient client = new ProbeClient(port, SERVER_NAME, "Bearer " + ACCESS_TOKEN);
         try {
@@ -154,10 +147,10 @@ class WsServerHandshakeAuthTest {
     @Test
     @DisplayName("缺失 x-self-name 的连接以 1008 被拒绝")
     void rejectsMissingServerNameHeader() throws Exception {
-        int port = findFreePort();
-        WsServer server = new WsServer(
-                new InetSocketAddress("127.0.0.1", port), LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, "", true);
+        StartedWsServer server = new StartedWsServer(LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, "");
         server.start();
+        assertTrue(server.awaitStarted(10_000L), "服务端应在超时前完成启动");
+        int port = server.getPort();
 
         ProbeClient clientWithoutName = new ProbeClient(port, null, null);
         try {
@@ -226,10 +219,10 @@ class WsServerHandshakeAuthTest {
     @Test
     @DisplayName("accessToken 为 null 时归一化为不鉴权，连接被正常接受")
     void nullAccessTokenMeansNoAuthRequired() throws Exception {
-        int port = findFreePort();
-        WsServer server = new WsServer(
-                new InetSocketAddress("127.0.0.1", port), LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, null, true);
+        StartedWsServer server = new StartedWsServer(LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, null);
         server.start();
+        assertTrue(server.awaitStarted(10_000L), "服务端应在超时前完成启动");
+        int port = server.getPort();
 
         ProbeClient client = new ProbeClient(port, SERVER_NAME, null);
         try {
@@ -253,10 +246,10 @@ class WsServerHandshakeAuthTest {
     @Test
     @DisplayName("通过 URL query 传递 Authorization 仍被接受（浏览器兼容）")
     void authorizationViaQueryIsAccepted() throws Exception {
-        int port = findFreePort();
-        WsServer server = new WsServer(
-                new InetSocketAddress("127.0.0.1", port), LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, ACCESS_TOKEN, true);
+        StartedWsServer server = new StartedWsServer(LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, ACCESS_TOKEN);
         server.start();
+        assertTrue(server.awaitStarted(10_000L), "服务端应在超时前完成启动");
+        int port = server.getPort();
 
         ProbeClient client = new ProbeClient(port, SERVER_NAME, "Bearer " + ACCESS_TOKEN, true);
         try {
@@ -272,10 +265,10 @@ class WsServerHandshakeAuthTest {
     @Test
     @DisplayName("已配置 token 但连接未携带凭据时被拒绝（1008）")
     void missingCredentialIsRejected() throws Exception {
-        int port = findFreePort();
-        WsServer server = new WsServer(
-                new InetSocketAddress("127.0.0.1", port), LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, ACCESS_TOKEN, true);
+        StartedWsServer server = new StartedWsServer(LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, ACCESS_TOKEN);
         server.start();
+        assertTrue(server.awaitStarted(10_000L), "服务端应在超时前完成启动");
+        int port = server.getPort();
 
         ProbeClient client = new ProbeClient(port, SERVER_NAME, null);
         try {
@@ -305,12 +298,12 @@ class WsServerHandshakeAuthTest {
     @Test
     @DisplayName("query 来源的服务器名只解码一次，含 % 的名字可正常匹配（D2 回归）")
     void queryServerNameIsDecodedExactlyOnce() throws Exception {
-        int port = findFreePort();
         String serverNameWithPercent = "Test%Server";
 
-        WsServer server = new WsServer(
-                new InetSocketAddress("127.0.0.1", port), LOGGER, HANDLE_PROTOCOL_MESSAGE, serverNameWithPercent, "", true);
+        StartedWsServer server = new StartedWsServer(LOGGER, HANDLE_PROTOCOL_MESSAGE, serverNameWithPercent, "");
         server.start();
+        assertTrue(server.awaitStarted(10_000L), "服务端应在超时前完成启动");
+        int port = server.getPort();
 
         // 传原始名字，由 ProbeClient 统一编码一次（此前误传已编码值导致双重编码）
         ProbeClient client = new ProbeClient(port, serverNameWithPercent, null, true);
@@ -327,10 +320,10 @@ class WsServerHandshakeAuthTest {
     @Test
     @DisplayName("query 来源的服务器名仍可正常匹配（兼容保留）")
     void queryServerNameStillWorks() throws Exception {
-        int port = findFreePort();
-        WsServer server = new WsServer(
-                new InetSocketAddress("127.0.0.1", port), LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, "", true);
+        StartedWsServer server = new StartedWsServer(LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, "");
         server.start();
+        assertTrue(server.awaitStarted(10_000L), "服务端应在超时前完成启动");
+        int port = server.getPort();
 
         ProbeClient client = new ProbeClient(port, SERVER_NAME, null, true);
         try {
@@ -362,6 +355,43 @@ class WsServerHandshakeAuthTest {
     /**
      * 探测用客户端：可自定义 x-self-name 与 Authorization
      */
+    /**
+     * 启动就绪可等待的测试服务端
+     *
+     * <p><b>为什么需要它</b>：此前测试先绑定 0 号端口取号、立即释放，再让 {@code WsServer}
+     * 绑定该端口，存在两个竞态：
+     * <ol>
+     *     <li><b>TOCTOU</b>：取号与绑定之间，端口可能被其它进程抢占；</li>
+     *     <li><b>启动未就绪</b>：{@code server.start()} 是异步的，客户端可能在服务端真正
+     *         bind/listen 之前就发起连接，于是拿到 1006 / -1 等非预期关闭码。</li>
+     * </ol>
+     * 现在改为让操作系统分配端口（{@code port = 0}），并用 {@link #onStart()} 作为
+     * <b>就绪栅栏</b>：测试先 {@code awaitStarted()}，再用 {@link #getPort()} 拿到真实端口，
+     * 之后才创建客户端。这样既不依赖 sleep，也不需要重试或放宽断言。
+     */
+    private static final class StartedWsServer extends WsServer {
+
+        private final CountDownLatch started = new CountDownLatch(1);
+
+        private StartedWsServer(
+                Logger logger, HandleProtocolMessage dispatcher, String serverName, String accessToken) {
+            super(new InetSocketAddress("127.0.0.1", 0), logger, dispatcher, serverName, accessToken, true);
+        }
+
+        @Override
+        public void onStart() {
+            try {
+                super.onStart();
+            } finally {
+                started.countDown();
+            }
+        }
+
+        private boolean awaitStarted(long timeoutMillis) throws InterruptedException {
+            return started.await(timeoutMillis, TimeUnit.MILLISECONDS);
+        }
+    }
+
     private static final class ProbeClient extends WebSocketClient {
 
         private final CountDownLatch openLatch = new CountDownLatch(1);
