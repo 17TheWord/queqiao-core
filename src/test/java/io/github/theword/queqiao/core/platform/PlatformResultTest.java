@@ -93,4 +93,40 @@ class PlatformResultTest {
                         .toString()
                         .contains("UNSUPPORTED"));
     }
+
+    // ------------------------------------------------------------------
+    // failure 的合法性不变量
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("failure 不接受 SUCCESS：非法状态必须快速失败")
+    void failureRejectsSuccessCode() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> PlatformResult.failure(PlatformResultCode.SUCCESS, "failed"),
+                "failure(SUCCESS, ...) 会产生「看似失败实为成功」的非法状态");
+    }
+
+    @Test
+    @DisplayName("failure 的 code 不得为 null")
+    void failureRejectsNullCode() {
+        assertThrows(NullPointerException.class, () -> PlatformResult.failure(null, "failed"));
+    }
+
+    @Test
+    @DisplayName("合法状态均可构造，且 isSuccess 与 code 一致")
+    void allLegalStatesAreAccepted() {
+        assertTrue(PlatformResult.success(null).isSuccess(), "success(...) 应为成功");
+
+        for (PlatformResultCode code : new PlatformResultCode[] {
+                PlatformResultCode.PLAYER_NOT_FOUND,
+                PlatformResultCode.INVALID_ARGUMENT,
+                PlatformResultCode.UNSUPPORTED,
+                PlatformResultCode.FAILED}) {
+            PlatformResult<Void> result = PlatformResult.failure(code, "x");
+            assertFalse(result.isSuccess(), code + " 不应被视为成功");
+            assertEquals(code, result.getCode());
+            assertNull(result.getData(), "失败结果的 data 恒为 null");
+        }
+    }
 }

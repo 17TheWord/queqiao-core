@@ -27,6 +27,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -339,6 +340,69 @@ class CommandLayerTest {
                     IllegalStateException.class,
                     () -> router.getRootCommand().addChild(new HelpCommand<>(LOGGER)),
                     "冻结后不得再注册子命令");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Locale 无关性（§7 / §8）
+    // ------------------------------------------------------------------
+
+    /**
+     * 名称含大写 {@code I} 的探针节点
+     *
+     * <p>在 Turkish locale 下 {@code "INFO".toLowerCase()} 会变成 {@code "ınfo"}（无点 ı），
+     * 而用户输入的 {@code "i"} 仍是有点 i —— 若补全用默认 Locale 匹配，两者对不上，
+     * {@code INFO} 就会从候选里消失。命令名含大写 I 才暴露这个问题，
+     * 而内置命令恰好全是小写，所以必须用探针节点来固定这条回归。
+     */
+    private static final class UpperCaseProbeNode extends CommandNode<Object> {
+
+        private UpperCaseProbeNode() {
+            super(LOGGER);
+        }
+
+        @Override
+        public String getName() {
+            return "INFO";
+        }
+
+        @Override
+        public String getDescription() {
+            return "大写 I 探针节点";
+        }
+
+        @Override
+        protected void onExecute(CommandExecutionContext<Object> context, List<String> args) {
+            // 探针：不需要执行行为
+        }
+    }
+
+    @Test
+    @DisplayName("tab 补全不受默认 Locale 影响（Turkish i 回归）")
+    void tabCompletionIsLocaleIndependent() throws Exception {
+        int serverPort = findFreePort();
+        int deadPort = findFreePort();
+
+        try (ConfigFixture ignored = new ConfigFixture(serverPort, deadPort)) {
+            startRuntime();
+
+            CommandRouter<Object> router = newRouter();
+            router.getRootCommand().addChild(new UpperCaseProbeNode());
+
+            FakeCommandExecutionContext<Object> context = new FakeCommandExecutionContext<>(NATIVE_SOURCE);
+
+            Locale original = Locale.getDefault();
+            List<String> completions;
+            try {
+                Locale.setDefault(new Locale("tr", "TR"));
+                completions = router.tabComplete(context, new String[] {"i"});
+            } finally {
+                Locale.setDefault(original);
+            }
+
+            assertTrue(
+                    completions.contains("INFO"),
+                    "Turkish locale 下输入 i 仍应补全 INFO（补全必须用 Locale.ROOT），实际=" + completions);
         }
     }
 

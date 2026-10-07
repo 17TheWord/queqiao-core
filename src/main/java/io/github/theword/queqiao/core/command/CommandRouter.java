@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -166,13 +167,13 @@ public class CommandRouter<NCS> {
         }
 
         // 最后一个参数是用户正在输入的内容
-        String lastArg = args[args.length - 1].toLowerCase();
+        String lastArg = args[args.length - 1].toLowerCase(Locale.ROOT);
 
         // 返回匹配前缀的子命令名称，并过滤无权限的命令
         return current.getChildren().stream()
                 .filter(child -> context.hasPermission(child.getPermissionNode()))
                 .map(CommandNode<NCS>::getName)
-                .filter(name -> name.toLowerCase().startsWith(lastArg))
+                .filter(name -> name.toLowerCase(Locale.ROOT).startsWith(lastArg))
                 .collect(Collectors.toList());
     }
 }

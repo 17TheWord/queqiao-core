@@ -5,7 +5,6 @@ import java.util.UUID;
 
 import com.google.gson.JsonElement;
 
-import io.github.theword.queqiao.core.constant.ProtocolConstants;
 import io.github.theword.queqiao.core.constant.ServerTypeConstant;
 import io.github.theword.queqiao.core.event.model.PlayerModel;
 
@@ -56,6 +55,19 @@ public abstract class AbstractPlatformContext<S, C, P> {
      * 便于非协议调用方直接展示。
      */
     private static final String MESSAGE_PLAYER_NOT_FOUND = "Target player not found.";
+
+    /**
+     * 平台未实现标题功能的说明
+     *
+     * <p>属于<b>平台层</b>的文案：它描述的是平台能力缺失，不是协议状态。
+     * 协议层不应拥有这条文本，因此不放在 {@code ProtocolConstants}。
+     */
+    private static final String MESSAGE_TITLE_UNSUPPORTED = "当前平台未实现标题功能";
+
+    /**
+     * 平台未实现 ActionBar 功能的说明
+     */
+    private static final String MESSAGE_ACTIONBAR_UNSUPPORTED = "当前平台未实现 ActionBar 功能";
 
     /**
      * 服务端实例
@@ -176,7 +188,7 @@ public abstract class AbstractPlatformContext<S, C, P> {
      */
     public PlatformResult<Void> sendTitleComponent(C title, C subtitle, int fadeIn, int stay, int fadeOut) {
         return PlatformResult.failure(
-                PlatformResultCode.UNSUPPORTED, ProtocolConstants.Message.TITLE_UNSUPPORTED);
+                PlatformResultCode.UNSUPPORTED, MESSAGE_TITLE_UNSUPPORTED);
     }
 
     /**
@@ -190,7 +202,7 @@ public abstract class AbstractPlatformContext<S, C, P> {
      */
     public PlatformResult<Void> sendActionBarComponent(C component) {
         return PlatformResult.failure(
-                PlatformResultCode.UNSUPPORTED, ProtocolConstants.Message.ACTIONBAR_UNSUPPORTED);
+                PlatformResultCode.UNSUPPORTED, MESSAGE_ACTIONBAR_UNSUPPORTED);
     }
 
     // ------------------------------------------------------------------

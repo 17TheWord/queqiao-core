@@ -10,7 +10,7 @@ import org.slf4j.Logger;
  *
  * <p>协议名：{@code send_command}。
  *
- * <p>该接口目前<b>不受支持</b>，无条件返回 500。保留它而不是不注册，
+ * <p>该接口目前<b>不受支持</b>，无条件返回 503（SERVICE_UNAVAILABLE）。保留它而不是不注册，
  * 是为了让客户端得到明确的"不支持"而不是 404 "未知 api"——两者的语义不同。
  *
  * <p>若使用方希望把该 api 表现为"不存在"，不注册它即可（走 404 分支）。
@@ -31,6 +31,6 @@ public final class SendCommandApi extends Api<EmptyPayload, Void> {
 
     @Override
     protected Void doExecute(EmptyPayload payload) throws ProtocolException {
-        throw ProtocolException.internalError(ProtocolConstants.Message.SEND_COMMAND_UNSUPPORTED);
+        throw ProtocolException.serviceUnavailable(ProtocolConstants.Message.SEND_COMMAND_UNSUPPORTED, null);
     }
 }

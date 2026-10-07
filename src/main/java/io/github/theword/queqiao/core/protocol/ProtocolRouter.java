@@ -120,8 +120,9 @@ public class ProtocolRouter {
         } catch (Exception e) {
             // 只有真正的内部异常才归 500；此处记录堆栈但不回传任何请求内容
             this.logger.error("处理 api={} 的请求时发生未预期异常", api, e);
-            String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-            return Response.failed(ProtocolConstants.Status.INTERNAL_ERROR, message);
+            // 只回传稳定的通用文案：异常信息 / 堆栈 / 类名可能携带文件路径、URI、token 等内部细节
+            return Response.failed(
+                    ProtocolConstants.Status.INTERNAL_ERROR, ProtocolConstants.Message.INTERNAL_ERROR);
         }
     }
 }
