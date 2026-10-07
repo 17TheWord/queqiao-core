@@ -83,9 +83,7 @@ class WsServerHandshakeAuthTest {
     @Test
     @DisplayName("错误 token 以 1008 被拒绝，正确 token 被接受")
     void rejectsWrongTokenAndAcceptsCorrectToken() throws Exception {
-        StartedWsServer server = new StartedWsServer(LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, ACCESS_TOKEN);
-        server.start();
-        assertTrue(server.awaitStarted(10_000L), "服务端应在超时前完成启动");
+        StartedWsServer server = startServer(LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, ACCESS_TOKEN);
         int port = server.getPort();
 
         ProbeClient wrongTokenClient = new ProbeClient(port, SERVER_NAME, "Bearer wrong-token");
@@ -114,9 +112,7 @@ class WsServerHandshakeAuthTest {
         PlatformStubs.RecordingPlatformContext platformContext = PlatformStubs.recordingPlatformContext();
         HandleProtocolMessage dispatcher = PlatformStubs.newDispatcher(
                 LOGGER, GSON, platformContext, PlatformStubs.rconExecutorReturning(""));
-        StartedWsServer server = new StartedWsServer(LOGGER, dispatcher, SERVER_NAME, ACCESS_TOKEN);
-        server.start();
-        assertTrue(server.awaitStarted(10_000L), "服务端应在超时前完成启动");
+        StartedWsServer server = startServer(LOGGER, dispatcher, SERVER_NAME, ACCESS_TOKEN);
         int port = server.getPort();
 
         ProbeClient client = new ProbeClient(port, SERVER_NAME, "Bearer " + ACCESS_TOKEN);
@@ -147,9 +143,7 @@ class WsServerHandshakeAuthTest {
     @Test
     @DisplayName("缺失 x-self-name 的连接以 1008 被拒绝")
     void rejectsMissingServerNameHeader() throws Exception {
-        StartedWsServer server = new StartedWsServer(LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, "");
-        server.start();
-        assertTrue(server.awaitStarted(10_000L), "服务端应在超时前完成启动");
+        StartedWsServer server = startServer(LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, "");
         int port = server.getPort();
 
         ProbeClient clientWithoutName = new ProbeClient(port, null, null);
@@ -219,9 +213,7 @@ class WsServerHandshakeAuthTest {
     @Test
     @DisplayName("accessToken 为 null 时归一化为不鉴权，连接被正常接受")
     void nullAccessTokenMeansNoAuthRequired() throws Exception {
-        StartedWsServer server = new StartedWsServer(LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, null);
-        server.start();
-        assertTrue(server.awaitStarted(10_000L), "服务端应在超时前完成启动");
+        StartedWsServer server = startServer(LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, null);
         int port = server.getPort();
 
         ProbeClient client = new ProbeClient(port, SERVER_NAME, null);
@@ -246,9 +238,7 @@ class WsServerHandshakeAuthTest {
     @Test
     @DisplayName("通过 URL query 传递 Authorization 仍被接受（浏览器兼容）")
     void authorizationViaQueryIsAccepted() throws Exception {
-        StartedWsServer server = new StartedWsServer(LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, ACCESS_TOKEN);
-        server.start();
-        assertTrue(server.awaitStarted(10_000L), "服务端应在超时前完成启动");
+        StartedWsServer server = startServer(LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, ACCESS_TOKEN);
         int port = server.getPort();
 
         ProbeClient client = new ProbeClient(port, SERVER_NAME, "Bearer " + ACCESS_TOKEN, true);
@@ -265,9 +255,7 @@ class WsServerHandshakeAuthTest {
     @Test
     @DisplayName("已配置 token 但连接未携带凭据时被拒绝（1008）")
     void missingCredentialIsRejected() throws Exception {
-        StartedWsServer server = new StartedWsServer(LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, ACCESS_TOKEN);
-        server.start();
-        assertTrue(server.awaitStarted(10_000L), "服务端应在超时前完成启动");
+        StartedWsServer server = startServer(LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, ACCESS_TOKEN);
         int port = server.getPort();
 
         ProbeClient client = new ProbeClient(port, SERVER_NAME, null);
@@ -300,9 +288,7 @@ class WsServerHandshakeAuthTest {
     void queryServerNameIsDecodedExactlyOnce() throws Exception {
         String serverNameWithPercent = "Test%Server";
 
-        StartedWsServer server = new StartedWsServer(LOGGER, HANDLE_PROTOCOL_MESSAGE, serverNameWithPercent, "");
-        server.start();
-        assertTrue(server.awaitStarted(10_000L), "服务端应在超时前完成启动");
+        StartedWsServer server = startServer(LOGGER, HANDLE_PROTOCOL_MESSAGE, serverNameWithPercent, "");
         int port = server.getPort();
 
         // 传原始名字，由 ProbeClient 统一编码一次（此前误传已编码值导致双重编码）
@@ -320,9 +306,7 @@ class WsServerHandshakeAuthTest {
     @Test
     @DisplayName("query 来源的服务器名仍可正常匹配（兼容保留）")
     void queryServerNameStillWorks() throws Exception {
-        StartedWsServer server = new StartedWsServer(LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, "");
-        server.start();
-        assertTrue(server.awaitStarted(10_000L), "服务端应在超时前完成启动");
+        StartedWsServer server = startServer(LOGGER, HANDLE_PROTOCOL_MESSAGE, SERVER_NAME, "");
         int port = server.getPort();
 
         ProbeClient client = new ProbeClient(port, SERVER_NAME, null, true);
@@ -369,6 +353,37 @@ class WsServerHandshakeAuthTest {
      * <b>就绪栅栏</b>：测试先 {@code awaitStarted()}，再用 {@link #getPort()} 拿到真实端口，
      * 之后才创建客户端。这样既不依赖 sleep，也不需要重试或放宽断言。
      */
+    /**
+     * 启动服务端并等待就绪；<b>就绪失败时立即释放</b>
+     *
+     * <p>就绪断言必须处在 {@code server.stop(...)} 的 try/finally 保护范围内：
+     * 否则一旦等待超时，断言会在测试自己的 finally **之前**抛出，
+     * 服务端的监听端口与线程就会残留下来，并可能干扰后续用例。
+     *
+     * @param logger     日志实现
+     * @param dispatcher 协议分发入口
+     * @param serverName 服务器名
+     * @param accessToken 访问令牌（null / 空串表示不鉴权）
+     * @return 已就绪的服务端；端口由操作系统分配，用 {@link StartedWsServer#getPort()} 获取
+     */
+    private static StartedWsServer startServer(
+            Logger logger, HandleProtocolMessage dispatcher, String serverName, String accessToken)
+            throws InterruptedException {
+        StartedWsServer server = new StartedWsServer(logger, dispatcher, serverName, accessToken);
+        boolean ready = false;
+        try {
+            server.start();
+            ready = server.awaitStarted(10_000L);
+            assertTrue(ready, "服务端应在超时前完成启动");
+        } finally {
+            if (!ready) {
+                // 未就绪 → 测试不会走到自己的 finally，这里必须兜住，避免线程/端口泄漏
+                server.stop(1000);
+            }
+        }
+        return server;
+    }
+
     private static final class StartedWsServer extends WsServer {
 
         private final CountDownLatch started = new CountDownLatch(1);
