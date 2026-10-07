@@ -23,16 +23,24 @@
    ```
    类型为 `io.github.theword.queqiao.core.runtime.QueQiaoRuntime`。
 2. 接口实现：
-    - `io.github.theword.queqiao.core.platform.AbstractPlatformContext`：**平台唯一接入点**。
-      实现其中的原语（JSON → 平台组件、在线玩家、按玩家发送、权限判定、命令回执），
+    - `io.github.theword.queqiao.core.platform.AbstractPlatformContext`：**平台唯一接入点**，
+      描述"平台运行环境与跨平台公共能力"。
+      实现其中的原语（JSON → 平台组件、在线玩家、按玩家发送、广播），
       并声明平台类型（`getServerType()`）与服务端版本（`getServerVersion()`）。
       标题与 ActionBar 有默认实现（表示"不支持"，返回 503），支持时覆盖即可。
+      **不负责命令来源**——回执与权限判定属于 `CommandExecutionContext`（见下）。
     - `io.github.theword.queqiao.core.api.DefaultApis`：内置的协议 API 批次
       （`broadcast`/`send_msg`、`send_title`、`send_actionbar`、`send_private_msg`、
       `send_command`、`send_rcon_command`、`get_status`）。默认全部启用；
       想裁剪或追加自定义 API，在 `apiConfigurer` 里增删列表即可——
       **未注册的 api 一律返回 404**。
-    - `io.github.theword.queqiao.core.command.subCommand`：实现各 `XxxAbstract` 子命令并注册。
+    - `io.github.theword.queqiao.core.command`：命令子系统。
+      `CommandNode<NCS>` 是命令树节点（业务扩展点 `onExecute`），
+      `CommandRouter<NCS>` 负责路径路由与 tab 补全，
+      `CommandExecutionContext<NCS>` 表示**一次命令调用**。
+      内置命令位于 `command.builtin`；第三方命令继承 `CommandNode` 并通过
+      `CommandRouter.getRootCommand().addChild(...)` 注册（须在首次 dispatch 之前完成，
+      之后命令树会被冻结）。
 3. 在服务端关闭前调用：
    ```java
    runtime.shutdown();
@@ -43,8 +51,36 @@
 > **迁移提示**：`GlobalContext` 已移除。原本通过它访问的能力改为从 Runtime 实例获取，
 > 例如 `runtime.sendEvent(...)`、`runtime.getConfig()`、`runtime.getLogger()`；
 > 命令层所需的依赖请从该 Runtime 显式取出后注入（`Config` / `Logger` /
-> `WebsocketManager` / `AbstractPlatformContext`），
-> 且命令树须在 `runtime.start()` 之后构建。
+> `WebsocketManager` / 重载动作），且命令树须在 `runtime.start()` 之后构建。
+> 命令层**不再**需要 `AbstractPlatformContext`。
+
+### 平台适配：实现一次命令调用的上下文
+
+`CommandExecutionContext<NCS>` 的 `NCS` 是 **Native Command Source**（平台原生命令来源）。
+平台适配层继承它并持有原生来源；Core 不认识任何平台类型：
+
+```java
+public final class XxxCommandExecutionContext
+        extends CommandExecutionContext<NativeCommandSource> {
+
+    public XxxCommandExecutionContext(NativeCommandSource nativeSource) {
+        super(nativeSource);
+    }
+
+    @Override
+    public void reply(String message) {
+        // 用平台自己的 API 把文本发给 nativeSource
+    }
+
+    @Override
+    public boolean hasPermission(String permission) {
+        // 平台自己的权限判定
+    }
+}
+```
+
+`nativeSource` 是 `public final` 字段，在整次 invocation 内保持不变且不可为 null；
+它既是平台适配层的工作对象，也是第三方命令访问平台特有能力时的入口。
 
 ## 接口说明
 
@@ -69,7 +105,7 @@
 1. 克隆项目
 
     ```shell
-    git clone https://github.com/17TheWord/QueQiao.git
+    git clone https://github.com/17TheWord/queqiao-core.git
     ```
 
 2. `JDK`：为支持 `1.7.10` - `1.16.5`（Java 8），项目编译目标为 **Java 8**。

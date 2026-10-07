@@ -126,6 +126,22 @@ public final class PlatformStubs {
     }
 
     /**
+     * 构造协议分发入口（铺<b>自定义</b> Api 批次）
+     *
+     * <p>用于验证协议层的兜底行为（例如未预期异常脱敏、预期协议异常保留语义），
+     * 这些场景不需要真实的平台能力，只需要一个会按预期抛异常的 Api。
+     *
+     * @param logger 日志实现
+     * @param gson   Gson 实例
+     * @param apis   自定义 Api 批次
+     * @return 协议分发入口
+     */
+    public static HandleProtocolMessage newDispatcher(
+            Logger logger, Gson gson, Collection<Api<?, ?>> apis) {
+        return new HandleProtocolMessage(logger, gson, apis, newRuntimeUtils(logger));
+    }
+
+    /**
      * 记录调用的平台上下文
      *
      * <p>记录发生在<b>平台原语层</b>（{@code broadcast(C)} / {@code sendMessage(P, C)} 等），

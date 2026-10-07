@@ -69,6 +69,12 @@ public final class PlatformResult<T> {
      * @return 失败结果
      */
     public static <T> PlatformResult<T> failure(PlatformResultCode code, String message) {
+        Objects.requireNonNull(code, "code");
+        if (code == PlatformResultCode.SUCCESS) {
+            throw new IllegalArgumentException(
+                    "failure(...) 不接受 SUCCESS —— 成功结果请使用 success(...)，"
+                            + "否则会产生「看似失败实为成功」的非法状态");
+        }
         return new PlatformResult<>(code, message, null);
     }
 

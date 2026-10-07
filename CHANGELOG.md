@@ -54,7 +54,7 @@
 
 #### 4. 构造器签名变更（源码级）
 
-仅影响**直接构造**这些类的代码；通过 `GlobalContext.init(...)` 使用的平台实现不受影响。
+仅影响**直接构造**这些类的代码；通过 `QueQiaoRuntime.create(...)` 使用的平台实现不受影响。
 
 | 类 | 变化 |
 | --- | --- |
@@ -89,7 +89,7 @@
 #### 6. 配置 API 变更（源码级）
 
 配置状态现在只有一个来源：`Config`（配置运行时值存储）。
-读取方式统一为 `GlobalContext.getConfig().get(ConfigKeys.XXX)`。
+读取方式统一为 `runtime.getConfig().get(ConfigKeys.XXX)`。
 
 | 移除 | 替代 |
 | --- | --- |
@@ -103,7 +103,7 @@
 | `Config.loadConfig(isModServer, logger, baseDirectory)` | 由 `QueQiaoRuntime.start()` 按固定顺序完成（先加载配置，再启动依赖配置的服务） |
 | `Config.defaults(logger)` | `new Config(registry)`：未加载任何文档时 `get` 即返回 Schema 默认值 |
 
-**升级提示**：`GlobalContext.getConfig()` 的**返回类型名仍是 `Config`**，但语义已完全改变——
+**升级提示**：`runtime.getConfig()` 的**返回类型名仍是 `Config`**，但语义已完全改变——
 它不再是原来的 POJO 门面，而是"配置运行时值存储"。此前依赖 `config.getWebsocketServer().getHost()`
 这类调用链的代码需要改写为 `config.get(ConfigKeys.WebSocket.HOST)`。
 
@@ -115,7 +115,7 @@
 | 移除 | 替代 |
 | --- | --- |
 | `handle.HandleApiService`（4 个方法的胖接口） | `platform.AbstractPlatformContext` 的 `broadcast` / `sendTitle` / `sendActionBar` / `sendPrivateMessage` |
-| `handle.HandleCommandReturnMessageService` | `platform.AbstractPlatformContext` 的 `checkPermission` / `returnCallBackMessage` |
+| `handle.HandleCommandReturnMessageService` | `command.CommandExecutionContext` 的 `reply` / `hasPermission` |
 | `protocol.AbstractProtocolHandler` 及全部 7 个 Handler | `api.Api<P, R>`，内置实现见 `api.DefaultApis` |
 | `api.ApiRegistry`（此前未接线） | 直接向 `ProtocolRouter` 传入 Api 集合 |
 
@@ -124,7 +124,7 @@
 ```java
 QueQiaoRuntime.create(
     Consumer<ConfigRegistry> configurer,             // 可空：启动期 Schema 注册
-    AbstractPlatformContext<?, ?, ?, ?> platformContext,
+    AbstractPlatformContext<?, ?, ?> platformContext,
     Consumer<List<Api<?, ?>>> apiConfigurer);        // 可空：null = 启用内置完整批次
 ```
 
@@ -139,8 +139,61 @@ QueQiaoRuntime.create(
 - `send_private_msg` 的响应改由 core 构造：找不到玩家返回 `Target player not found.`；
   成功时 `target_player` 只填 `nickname` 与 `uuid`（不再由平台回填其它字段）。
 - 平台未实现标题 / ActionBar 时，`send_title` / `send_actionbar` 返回 **503**（此前落到 500）。
-- `AbstractPlatformContext#checkPermission` / `returnCallBackMessage` 的入参类型是 `Object`，
-  平台侧需保证传入的确实是本平台的命令源类型；类型不符会抛 `ClassCastException`。
+- 命令来源能力**不在** `AbstractPlatformContext` 上：回执与权限判定已归属
+  `command.CommandExecutionContext<NCS>`（见第 8 条）；平台上下文只负责平台公共能力，
+  且类型参数已由 `<S, C, P, CS>` 收敛为 `<S, C, P>`。
+
+#### 8. 命令子系统重构：`CommandSource` → `CommandExecutionContext<NCS>`
+
+命令层从"轻量 `CommandSource`（只有 `reply` / `hasPermission`）+ 与 Runtime 生命周期
+纠缠的回执通道"重构为"**携带平台原生命令来源的执行上下文 + 与 Runtime 完全解耦的命令子系统**"。
+
+| 移除 | 替代 |
+| --- | --- |
+| `platform.CommandSource`（非泛型接口） | `command.CommandExecutionContext<NCS>`（abstract class） |
+| `CommandSource.NONE` | 无——没有真实命令来源的调用不再创建上下文，直接调用业务方法 |
+| `command.SubCommand` | `command.CommandNode<NCS>` |
+| `command.CommandExecutorHelper` | `command.CommandRouter<NCS>` |
+| 包 `command.subCommand`（含 `.client` / `.server`） | 包 `command.builtin` |
+
+新的命令上下文（`NCS` = **Native Command Source**，平台原生命令来源）：
+
+```java
+public abstract class CommandExecutionContext<NCS> {
+
+    public final NCS nativeSource;              // 一次 invocation 内不变，不得为 null
+
+    public abstract void reply(String message);
+    public abstract boolean hasPermission(String permission);
+}
+```
+
+- **端到端泛型**：`CommandNode<NCS>` / `RootCommand<NCS>` / `CommandRouter<NCS>` / `builtin/*<NCS>`；
+  `NCS` **只**存在于 `command` 包内——Runtime / WebsocketManager / `AbstractPlatformContext`
+  都不再引用命令上下文。
+- **平台适配层**继承 `CommandExecutionContext<平台原生命令来源>` 并实现两个抽象方法；
+  第三方命令因此可以在**编译期**拿到强类型 `nativeSource`，无需强转。
+
+**Runtime / WebSocket 与命令上下文解耦**（本次最重要的边界修正）：
+
+| 旧签名 | 新签名 |
+| --- | --- |
+| `QueQiaoRuntime.reload(CommandSource)` | `QueQiaoRuntime.reload()` → `ReloadResult` |
+| `WebsocketManager.start(CommandSource)` | `WebsocketManager.start()` → `List<String>` |
+| `WebsocketManager.stop(int, String, CommandSource)` | `WebsocketManager.stop(int, String)` → `List<String>` |
+| `WebsocketManager.restart(Config, CommandSource)` | `WebsocketManager.restart(Config)` → `List<String>` |
+
+- Runtime 与 WebsocketManager **不再回执**：进度消息作为结果返回，由 `ReloadCommand` 统一发送
+  （消息内容与顺序不变）。
+- `WebsocketManager` 构造器不再接收 `AbstractPlatformContext`（此前它只用于回执）。
+- 所有 `if (source != null)` 判断随之消失。
+
+**命令树注册生命周期**：`CommandNode.addChild` 增加 5 条 fail-fast 不变量
+（null / 空白名 / 同层重名 / 已有 parent / 成环），并新增 `freeze()`；
+`CommandRouter` 首次 `execute` / `tabComplete` 时自动冻结，之后结构不可再修改。
+
+**升级提示**：平台侧需为每个平台实现一个 `XxxCommandExecutionContext`，
+并把 `extends AbstractPlatformContext<...>` 的第四个类型参数去掉。
 
 ### 新增
 
@@ -170,6 +223,14 @@ QueQiaoRuntime.create(
 - `BaseEvent.fillServerContext(serverName, serverVersion, serverType)`：发布前填充服务器上下文。
 - `WebsocketConstantMessage.SHUTDOWN`：整体关闭时使用的关闭原因（纯文本）。
 - `ReconnectPolicy`：重连退避策略纯组件，无网络与线程依赖，可独立测试。
+- **命令子系统**：`command.CommandExecutionContext<NCS>`（一次命令调用的执行上下文）、
+  `command.CommandNode<NCS>`（命令树节点，业务扩展点 `onExecute`）、
+  `command.CommandRouter<NCS>`（路径路由 + tab 补全）、`command.RootCommand<NCS>`、
+  `command.builtin.*`（内置命令）。命令树支持 `freeze()` 以明确"注册阶段 → 分发阶段"。
+- `runtime.ReloadResult`：重载进度消息的载体——Runtime 只返回结果，不回执。
+- `platform.PlatformResult<T>` / `platform.PlatformResultCode`：平台操作的统一结果表达
+  （`SUCCESS` / `PLAYER_NOT_FOUND` / `INVALID_ARGUMENT` / `UNSUPPORTED` / `FAILED`），
+  把"平台侧发生了什么"与"协议状态码"彻底分开。
 - `ReconnectReason`：重连原因枚举（`REMOTE_CLOSE` / `MANUAL`）。
 - `WebSocketUrlNormalizer`：WebSocket URL 归一化（trim / 去空 / 去重 / `ws://` `wss://` scheme 校验）与日志脱敏。
 - `LogSanitizer`：日志脱敏工具，按字段名递归遮蔽 `access_token` / `authorization` / `token` / `password` / `passwd` / `secret` / `api_key` / `apikey`，并按 1 KB 截断。
@@ -198,22 +259,23 @@ QueQiaoRuntime.create(
 - **用户配置错误与程序缺陷严格区分**：只有显式识别的配置错误（`ConfigValidationException`）
   才会按"配置问题"处理；其它 `RuntimeException` 一律**原样上抛**（带堆栈），
   绝不静默转换成默认配置——否则真实缺陷会被伪装成"配置问题"而永远查不出来。
-- **传输层不再依赖全局状态**：`WebsocketManager` 改为通过构造器接收 `Config` 快照，
-  reload 时调用 `restart(Config, Object)` 传入新快照。
-  此前它会在 14 处直接读取 `GlobalContext.getConfig()`。
-- **协议层不再依赖全局状态**：`ProtocolRouter` 与各处理器改为通过构造器接收
-  `HandleApiService`（平台 API）与 `RconCommandExecutor`（RCON 执行器），
-  不再访问 `GlobalContext.getHandleApiService()` / `GlobalContext.sendRconCommand(...)`。
+- **传输层不再依赖全局状态**：`WebsocketManager` 通过构造器接收
+  `HandleProtocolMessage`、`Config` 与 `RuntimeUtils`；reload 时通过
+  `restart(Config)` 替换配置快照，不再读取全局配置。
+- **协议层改为 API 集合注入**：`ProtocolRouter` 构造器接收
+  `Collection<Api<?, ?>>`，`HandleProtocolMessage` 负责持有并调用路由器。
+  内置 API 由 `DefaultApis` 组装，RCON 能力通过 `RconCommandExecutor`
+  注入 `SendRconCommandApi`。
 - **事件的服务器上下文改为"发布时填充"**：`BaseEvent` 的 `server_name` / `server_version` / `server_type`
-  不再在字段初始化器中读取全局状态，而由 `GlobalContext.sendEvent(...)` 在序列化前调用
+  不再在字段初始化器中读取全局状态，而由 `QueQiaoRuntime.sendEvent(...)` 在序列化前调用
   `fillServerContext(...)` 填充。
   **升级提示**：若代码自行构造事件后**不经发布路径**直接序列化，
   这三个字段将由"构造时的全局值"变为 `null`。
-- **构造器签名变更**：`WebsocketManager`（新增 `Config`）、
-  `ProtocolRouter`（新增 `HandleApiService` 与 `RconCommandExecutor`）、
-  `HandleProtocolMessage`（新增 `HandleApiService` 与 `RconCommandExecutor`）、
-  `AbstractProtocolHandler` 及全部 7 个处理器（新增 `HandleApiService`）。
-  仅影响**直接构造**这些类的代码；通过 `GlobalContext.init(...)` 使用的平台实现不受影响。
+- **构造器签名变更**：
+  `ProtocolRouter(Logger, Collection<Api<?, ?>>)`；
+  `HandleProtocolMessage(Logger, Gson, Collection<Api<?, ?>>, RuntimeUtils)`；
+  `WebsocketManager(Logger, Gson, HandleProtocolMessage, Config, RuntimeUtils)`。
+  仅影响**直接构造**这些类的代码；通过 `QueQiaoRuntime.create(...)` 使用的平台实现不受影响。
 - `MinecraftPingClient` 改用 `GsonUtils.getGson()`，不再经 `GlobalContext`。
 - **`Authorization` 仍支持通过 URL query 传递，并已在 javadoc 中说明其安全代价**：
   浏览器的 WebSocket API **无法设置自定义请求头**（`new WebSocket(url)` 不接受 headers 选项），
@@ -249,13 +311,14 @@ QueQiaoRuntime.create(
 - **明确协议只支持文本帧**：二进制帧由 Java-WebSocket 的空实现静默忽略，本项目有意不覆写
   （覆写只能多打一条日志、不改变行为，反而会在客户端持续发送二进制帧时刷屏）。
   若排查"客户端称已发送但服务端无响应"，这是需要确认的方向之一。
-- **`GlobalContext.init()` 现在幂等**：若已初始化，会**先关闭旧实例**再创建新实例。
-  此前重复初始化会直接覆盖运行时引用，导致旧实例持有的 WebSocket 连接、共享重连调度器、
-  Rcon 连接与线程变成无法再关闭的孤儿对象。对"插件热重载"这类场景现在是正确行为。
-- **未初始化 / 已关闭状态下上下文可用**：`GlobalContext.getConfig()` 与 `getLogger()`
-  不再返回 `null`，而是返回默认配置与不输出内容的 NOP 日志；
-  `shutdown()` / `sendEvent()` 在该状态下为安全空操作。
-  依赖"未初始化时读配置会抛 NPE"来探测状态的代码需调整。
+- **生命周期由状态机约束**：`QueQiaoRuntime` 以 `NEW → STARTING → RUNNING → STOPPING → STOPPED`
+  （失败为 `FAILED`）表达生命周期；重复 `start()` 会**明确失败**，而不是静默覆盖运行时引用——
+  后者会让旧实例持有的 WebSocket 连接、共享重连调度器、Rcon 连接与线程变成无法关闭的孤儿对象。
+- **未启动 / 已关闭状态下调用是安全的**：`shutdown()` 与 `sendEvent(...)` 在该状态下为**安全空操作**
+  （`sendEvent` 只记一条 debug 日志后返回）；`getLogger()` 恒返回非 null 的日志实现。
+  依赖"未初始化时调用会抛 NPE"来探测状态的代码需调整。
+  **`getConfig()` 在 `start()` 之前也不为 null**：Runtime 构造时即创建唯一的配置状态，
+  初始包含 Schema 默认值；`start()` 时的配置加载会**更新**这份状态，而不是替换成新的。
 - **重连机制统一**：自动重连与手动重连共用同一套 pipeline（`requestReconnect`），
   引入代际号（generation）与 `reconnectInProgress` 非阻塞互斥，保证同一 Client 任意时刻
   最多一个待执行、最多一个正在执行的重连。
@@ -267,7 +330,7 @@ QueQiaoRuntime.create(
   改用 `stopped` 表达"是否仍需要维持连接"。
 - **`connectionLostTimeout` 显式设置**为 60 秒，不再依赖库默认值。
 - **协议层不再依赖全局状态**：`ProtocolRouter` 与各 handler 的日志实现改为构造器注入，
-  协议分发可脱离 `GlobalContext` 独立测试。
+  协议分发可脱离全局状态独立测试。
 - **`sendEvent` 分发**：先取接收方快照再序列化；无任何接收方时跳过序列化。
   （序列化与分发仍在调用线程同步完成——实测单次约 1~2.3 µs，未引入异步队列。）
 - **日志级别调整**：`get_status` 请求日志由 `INFO` 降为 `DEBUG`（该接口可能被高频轮询）。
@@ -302,9 +365,9 @@ QueQiaoRuntime.create(
   **升级提示**：关闭原因文本发生变化，若客户端按关闭原因做字符串匹配需适配。
 - **`client list` 的编号从 0 开始**：同一条命令的两个分支编号规则不一致
   （"未启用"分支从 1 起、"已启用"分支从 0 起）。现统一为**从 1 开始**。
-- **平台实现为 null 时启动阶段不报错**：`GlobalContext.init(...)` 现在会校验
-  `handleApiImpl` 与 `handleCommandReturnMessageImpl`，为 null 时**立即抛出并指明参数名**。
-  此前会拖到"第一条协议请求"或"第一条命令"执行时才抛 NPE，定位成本很高。
+- **平台实现为 null 时创建阶段即报错**：`QueQiaoRuntime.create(...)` 会校验平台上下文，
+  为 null 时**立即抛出并指明参数名**。
+  此前会拖到"第一条协议请求"执行时才抛 NPE，定位成本很高。
 - **`WebsocketManager` 的必填依赖改为构造期校验**：`handleCommandReturnMessageService` 为 null 时，
   此前会在 `stop()` 中途抛 NPE——此时客户端已全部停止、而**共享调度器尚未关闭**，
   导致调度器与线程泄漏，且 `QueQiaoRuntime.shutdown()` 后续的 Rcon 关闭与日志都不执行。
@@ -324,14 +387,6 @@ QueQiaoRuntime.create(
   同时地址获取改用 `InetSocketAddress#getHostString()` / `getPort()`，
   不再依赖 `InetSocketAddress.toString()` 的格式做字符串清理。
 - **`onError` 日志出现无意义的 `null`**：异常 `getMessage()` 为 null 时现回退为异常类名。
-- **重复初始化泄漏资源**（严重）：`GlobalContext.init()` 此前无幂等保护，
-  重复调用会覆盖运行时引用，旧实例的 WebSocket 连接、共享调度器、Rcon 连接与线程永久泄漏。
-- **未初始化时上下文方法直接崩溃**（严重）：运行时空对象此前是"所有字段为 null"的失效对象，
-  导致 `GlobalContext.shutdown()` / `sendEvent()` 在未初始化时抛 `NullPointerException`。
-  现已改为真正可用的最小运行时。
-- **运行时的跨线程可见性缺陷**（严重）：`GlobalContext.runtime` 此前非 `volatile`，
-  且运行时字段既非 `final` 也无 `volatile`，由初始化线程写入、由游戏线程与 WebSocket 线程读取，
-  可能读到旧引用或半初始化对象（且难以复现）。现已用 `volatile` + `final` 显式声明修复。
 - **忽略命令列表可能为 null**：该字段此前无初始值，
   一旦配置加载中途失败便会保持 null，导致 `Tool.isIgnoredCommand` 抛 `NullPointerException`。
   现在 `ConfigKeys.IGNORED_COMMANDS` 的默认值为空列表（可变类型每次取用都是独立副本），
@@ -359,12 +414,15 @@ QueQiaoRuntime.create(
   现已在 callback 内隔离，异常只记日志、不上抛。
 - **认证失败日志泄漏 token**：`WsServer` 此前会把客户端提交的 `Authorization` 值原样写入日志。
   现已移除该值，只记录来源地址（`Authorization` 字段名仍保留以便定位问题）。
-- **`Tool.debugLog` 空指针**：未初始化全局上下文时 `GlobalContext.getConfig()` 返回 null，
-  导致 `debugLog` 抛 `NullPointerException`。已加空值防护。
+- **`Tool.debugLog` 空指针**：运行时尚未启动（配置状态为 null）时 `debugLog` 会抛
+  `NullPointerException`。已加空值防护。
 - **解析失败被误判为服务端错误**：见「破坏性变更」第 1 条。
 
 ### 移除
 
+- **删除 `GlobalContext` 全局上下文**：原本通过它访问的能力改为从 `QueQiaoRuntime` 实例获取
+  （`runtime.sendEvent(...)` / `getConfig()` / `getLogger()`），协议层与传输层的依赖改由构造器显式注入。
+  这也是本节其它条目中"不再依赖 `GlobalContext`"的由来。
 - 移除 `WsServer.broadcast(String)` 的**纯透传覆写**（方法体只有 `super.broadcast(text)`，无任何附加逻辑）。
 - 删除两个无有效断言的测试类：`WsClientTest`、`WsServerTest`。
   前者只断言 JDK 的 `URLEncoder` 行为（对 `WsClient` 零覆盖），
@@ -376,6 +434,11 @@ QueQiaoRuntime.create(
   `SubscribeEventConfig` / `RconConfig`）与其对应测试。
 - 删除随包资源 `config.example.yml`：配置项的唯一来源改为代码中的 Schema（`ConfigKeys`），
   不再维护一份可能与代码漂移的 YAML 副本。
+- 删除 `platform.CommandSource` 与 `CommandSource.NONE`：命令来源抽象已由
+  `command.CommandExecutionContext<NCS>` 取代，且不再需要空上下文。
+- 删除 `command.SubCommand`、`command.CommandExecutorHelper` 及包 `command.subCommand`。
+- 从 `ProtocolConstants.Message` 删除 `TITLE_UNSUPPORTED` / `ACTIONBAR_UNSUPPORTED`：
+  这两条描述的是"平台能力缺失"，文案已归属平台层，不再由协议层拥有。
 
 ### 测试
 

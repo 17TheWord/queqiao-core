@@ -1,7 +1,10 @@
 package io.github.theword.queqiao.core.handle;
 
+import io.github.theword.queqiao.core.api.Api;
 import io.github.theword.queqiao.core.constant.ProtocolConstants;
+import io.github.theword.queqiao.core.exception.protocol.ProtocolException;
 import io.github.theword.queqiao.core.exception.rcon.RconException;
+import io.github.theword.queqiao.core.payload.EmptyPayload;
 import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
 import io.github.theword.queqiao.core.protocol.RconCommandExecutor;
 import io.github.theword.queqiao.core.support.PlatformStubs;
@@ -11,6 +14,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.Collections;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -105,9 +110,90 @@ class ProtocolDispatchTest {
     }
 
     @Test
-    @DisplayName("已注册但不受支持的 api 返回 500")
-    void unsupportedApiReturnsInternalError() {
-        assertEquals(INTERNAL_ERROR, dispatch("{\"api\":\"send_command\"}").getCode().intValue());
+    @DisplayName("已注册但不受支持的 api 返回 503（SERVICE_UNAVAILABLE，而非 500）")
+    void unsupportedApiReturnsServiceUnavailable() {
+        assertEquals(
+                ProtocolConstants.Status.SERVICE_UNAVAILABLE,
+                dispatch("{\"api\":\"send_command\"}").getCode().intValue(),
+                "「API 存在但当前能力不可用」是 503；500 只表示服务端发生未预期错误");
+    }
+
+    // ------------------------------------------------------------------
+    // 未预期异常脱敏
+    // ------------------------------------------------------------------
+
+    /**
+     * 抛未预期异常的探针 Api
+     */
+    private static final class ThrowingApi extends Api<EmptyPayload, Void> {
+
+        private ThrowingApi() {
+            super(EmptyPayload.class, LOGGER);
+        }
+
+        @Override
+        public String name() {
+            return "boom";
+        }
+
+        @Override
+        protected Void doExecute(EmptyPayload payload) {
+            throw new RuntimeException("SECRET_INTERNAL_ERROR_123");
+        }
+    }
+
+    /**
+     * 抛预期协议异常的探针 Api
+     */
+    private static final class BadRequestApi extends Api<EmptyPayload, Void> {
+
+        private BadRequestApi() {
+            super(EmptyPayload.class, LOGGER);
+        }
+
+        @Override
+        public String name() {
+            return "boom400";
+        }
+
+        @Override
+        protected Void doExecute(EmptyPayload payload) throws ProtocolException {
+            throw ProtocolException.badRequest("明确的协议错误");
+        }
+    }
+
+    @Test
+    @DisplayName("未预期异常：回传通用 500，不泄漏异常信息 / 类名 / 堆栈")
+    void unexpectedExceptionIsSanitized() {
+        HandleProtocolMessage dispatcher = PlatformStubs.newDispatcher(
+                LOGGER, GSON, Collections.<Api<?, ?>>singletonList(new ThrowingApi()));
+
+        String responseJson = dispatcher.handleHttpJson("{\"api\":\"boom\"}");
+        Response response = GSON.fromJson(responseJson, Response.class);
+
+        assertEquals(INTERNAL_ERROR, response.getCode().intValue(), "未预期异常应为 500");
+        assertEquals(
+                ProtocolConstants.Message.INTERNAL_ERROR,
+                response.getMessage(),
+                "应回传稳定的通用文案");
+        assertFalse(
+                responseJson.contains("SECRET_INTERNAL_ERROR_123"),
+                "响应不得泄漏异常信息，实际=" + responseJson);
+        assertFalse(
+                responseJson.contains("RuntimeException"),
+                "响应不得泄漏异常类名，实际=" + responseJson);
+    }
+
+    @Test
+    @DisplayName("预期协议异常仍保留其明确语义，不被通用 500 吞掉")
+    void expectedProtocolExceptionKeepsItsSemantics() {
+        HandleProtocolMessage dispatcher = PlatformStubs.newDispatcher(
+                LOGGER, GSON, Collections.<Api<?, ?>>singletonList(new BadRequestApi()));
+
+        Response response = GSON.fromJson(dispatcher.handleHttpJson("{\"api\":\"boom400\"}"), Response.class);
+
+        assertEquals(BAD_REQUEST, response.getCode().intValue(), "ProtocolException 应保留自身状态码");
+        assertEquals("明确的协议错误", response.getMessage(), "ProtocolException 应保留自身文案");
     }
 
     @Test

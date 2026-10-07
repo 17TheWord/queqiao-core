@@ -40,7 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  * 使测试不依赖全局状态、可在任意顺序下运行：
  * <ul>
  *     <li>未注册的 api → 处理器表未命中 → 404</li>
- *     <li>{@code send_command} → 处理器必然抛 {@code ProtocolException} → 500</li>
+ *     <li>{@code send_command} → 处理器必然抛 {@code ProtocolException} → 503</li>
  *     <li>{@code send_title} → 空 title/subtitle → 400</li>
  *     <li>{@code send_private_msg} → 空 nickname/uuid → 400</li>
  * </ul>
@@ -77,7 +77,7 @@ class HandleProtocolMessageConcurrencyTest {
 
     private static final ApiCase[] CASES = {
             new ApiCase("__unknown_api__", ProtocolConstants.Status.NOT_FOUND),
-            new ApiCase("send_command", ProtocolConstants.Status.INTERNAL_ERROR),
+            new ApiCase("send_command", ProtocolConstants.Status.SERVICE_UNAVAILABLE),
             new ApiCase("send_title", ProtocolConstants.Status.BAD_REQUEST),
             new ApiCase("send_private_msg", ProtocolConstants.Status.BAD_REQUEST),
     };
