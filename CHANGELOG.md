@@ -115,7 +115,7 @@
 | 移除 | 替代 |
 | --- | --- |
 | `handle.HandleApiService`（4 个方法的胖接口） | `platform.AbstractPlatformContext` 的 `broadcast` / `sendTitle` / `sendActionBar` / `sendPrivateMessage` |
-| `handle.HandleCommandReturnMessageService` | `platform.AbstractPlatformContext` 的 `checkPermission` / `returnCallBackMessage` |
+| `handle.HandleCommandReturnMessageService` | `command.CommandExecutionContext` 的 `reply` / `hasPermission` |
 | `protocol.AbstractProtocolHandler` 及全部 7 个 Handler | `api.Api<P, R>`，内置实现见 `api.DefaultApis` |
 | `api.ApiRegistry`（此前未接线） | 直接向 `ProtocolRouter` 传入 Api 集合 |
 
@@ -124,7 +124,7 @@
 ```java
 QueQiaoRuntime.create(
     Consumer<ConfigRegistry> configurer,             // 可空：启动期 Schema 注册
-    AbstractPlatformContext<?, ?, ?, ?> platformContext,
+    AbstractPlatformContext<?, ?, ?> platformContext,
     Consumer<List<Api<?, ?>>> apiConfigurer);        // 可空：null = 启用内置完整批次
 ```
 
@@ -139,8 +139,61 @@ QueQiaoRuntime.create(
 - `send_private_msg` 的响应改由 core 构造：找不到玩家返回 `Target player not found.`；
   成功时 `target_player` 只填 `nickname` 与 `uuid`（不再由平台回填其它字段）。
 - 平台未实现标题 / ActionBar 时，`send_title` / `send_actionbar` 返回 **503**（此前落到 500）。
-- `AbstractPlatformContext#checkPermission` / `returnCallBackMessage` 的入参类型是 `Object`，
-  平台侧需保证传入的确实是本平台的命令源类型；类型不符会抛 `ClassCastException`。
+- 命令来源能力**不在** `AbstractPlatformContext` 上：回执与权限判定已归属
+  `command.CommandExecutionContext<NCS>`（见第 8 条）；平台上下文只负责平台公共能力，
+  且类型参数已由 `<S, C, P, CS>` 收敛为 `<S, C, P>`。
+
+#### 8. 命令子系统重构：`CommandSource` → `CommandExecutionContext<NCS>`
+
+命令层从"轻量 `CommandSource`（只有 `reply` / `hasPermission`）+ 与 Runtime 生命周期
+纠缠的回执通道"重构为"**携带平台原生命令来源的执行上下文 + 与 Runtime 完全解耦的命令子系统**"。
+
+| 移除 | 替代 |
+| --- | --- |
+| `platform.CommandSource`（非泛型接口） | `command.CommandExecutionContext<NCS>`（abstract class） |
+| `CommandSource.NONE` | 无——没有真实命令来源的调用不再创建上下文，直接调用业务方法 |
+| `command.SubCommand` | `command.CommandNode<NCS>` |
+| `command.CommandExecutorHelper` | `command.CommandRouter<NCS>` |
+| 包 `command.subCommand`（含 `.client` / `.server`） | 包 `command.builtin` |
+
+新的命令上下文（`NCS` = **Native Command Source**，平台原生命令来源）：
+
+```java
+public abstract class CommandExecutionContext<NCS> {
+
+    public final NCS nativeSource;              // 一次 invocation 内不变，不得为 null
+
+    public abstract void reply(String message);
+    public abstract boolean hasPermission(String permission);
+}
+```
+
+- **端到端泛型**：`CommandNode<NCS>` / `RootCommand<NCS>` / `CommandRouter<NCS>` / `builtin/*<NCS>`；
+  `NCS` **只**存在于 `command` 包内——Runtime / WebsocketManager / `AbstractPlatformContext`
+  都不再引用命令上下文。
+- **平台适配层**继承 `CommandExecutionContext<平台原生命令来源>` 并实现两个抽象方法；
+  第三方命令因此可以在**编译期**拿到强类型 `nativeSource`，无需强转。
+
+**Runtime / WebSocket 与命令上下文解耦**（本次最重要的边界修正）：
+
+| 旧签名 | 新签名 |
+| --- | --- |
+| `QueQiaoRuntime.reload(CommandSource)` | `QueQiaoRuntime.reload()` → `ReloadResult` |
+| `WebsocketManager.start(CommandSource)` | `WebsocketManager.start()` → `List<String>` |
+| `WebsocketManager.stop(int, String, CommandSource)` | `WebsocketManager.stop(int, String)` → `List<String>` |
+| `WebsocketManager.restart(Config, CommandSource)` | `WebsocketManager.restart(Config)` → `List<String>` |
+
+- Runtime 与 WebsocketManager **不再回执**：进度消息作为结果返回，由 `ReloadCommand` 统一发送
+  （消息内容与顺序不变）。
+- `WebsocketManager` 构造器不再接收 `AbstractPlatformContext`（此前它只用于回执）。
+- 所有 `if (source != null)` 判断随之消失。
+
+**命令树注册生命周期**：`CommandNode.addChild` 增加 5 条 fail-fast 不变量
+（null / 空白名 / 同层重名 / 已有 parent / 成环），并新增 `freeze()`；
+`CommandRouter` 首次 `execute` / `tabComplete` 时自动冻结，之后结构不可再修改。
+
+**升级提示**：平台侧需为每个平台实现一个 `XxxCommandExecutionContext`，
+并把 `extends AbstractPlatformContext<...>` 的第四个类型参数去掉。
 
 ### 新增
 
@@ -170,6 +223,14 @@ QueQiaoRuntime.create(
 - `BaseEvent.fillServerContext(serverName, serverVersion, serverType)`：发布前填充服务器上下文。
 - `WebsocketConstantMessage.SHUTDOWN`：整体关闭时使用的关闭原因（纯文本）。
 - `ReconnectPolicy`：重连退避策略纯组件，无网络与线程依赖，可独立测试。
+- **命令子系统**：`command.CommandExecutionContext<NCS>`（一次命令调用的执行上下文）、
+  `command.CommandNode<NCS>`（命令树节点，业务扩展点 `onExecute`）、
+  `command.CommandRouter<NCS>`（路径路由 + tab 补全）、`command.RootCommand<NCS>`、
+  `command.builtin.*`（内置命令）。命令树支持 `freeze()` 以明确"注册阶段 → 分发阶段"。
+- `runtime.ReloadResult`：重载进度消息的载体——Runtime 只返回结果，不回执。
+- `platform.PlatformResult<T>` / `platform.PlatformResultCode`：平台操作的统一结果表达
+  （`SUCCESS` / `PLAYER_NOT_FOUND` / `INVALID_ARGUMENT` / `UNSUPPORTED` / `FAILED`），
+  把"平台侧发生了什么"与"协议状态码"彻底分开。
 - `ReconnectReason`：重连原因枚举（`REMOTE_CLOSE` / `MANUAL`）。
 - `WebSocketUrlNormalizer`：WebSocket URL 归一化（trim / 去空 / 去重 / `ws://` `wss://` scheme 校验）与日志脱敏。
 - `LogSanitizer`：日志脱敏工具，按字段名递归遮蔽 `access_token` / `authorization` / `token` / `password` / `passwd` / `secret` / `api_key` / `apikey`，并按 1 KB 截断。
@@ -376,6 +437,11 @@ QueQiaoRuntime.create(
   `SubscribeEventConfig` / `RconConfig`）与其对应测试。
 - 删除随包资源 `config.example.yml`：配置项的唯一来源改为代码中的 Schema（`ConfigKeys`），
   不再维护一份可能与代码漂移的 YAML 副本。
+- 删除 `platform.CommandSource` 与 `CommandSource.NONE`：命令来源抽象已由
+  `command.CommandExecutionContext<NCS>` 取代，且不再需要空上下文。
+- 删除 `command.SubCommand`、`command.CommandExecutorHelper` 及包 `command.subCommand`。
+- 从 `ProtocolConstants.Message` 删除 `TITLE_UNSUPPORTED` / `ACTIONBAR_UNSUPPORTED`：
+  这两条描述的是"平台能力缺失"，文案已归属平台层，不再由协议层拥有。
 
 ### 测试
 
