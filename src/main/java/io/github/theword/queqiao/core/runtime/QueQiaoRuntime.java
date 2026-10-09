@@ -14,11 +14,13 @@ import io.github.theword.queqiao.core.config.io.ConfigWriteSnapshot;
 import io.github.theword.queqiao.core.config.io.ConfigWriter;
 import io.github.theword.queqiao.core.api.Api;
 import io.github.theword.queqiao.core.api.DefaultApis;
+import io.github.theword.queqiao.core.command.CommandRouter;
 import io.github.theword.queqiao.core.constant.BaseConstant;
 import io.github.theword.queqiao.core.constant.WebsocketConstantMessage;
 import io.github.theword.queqiao.core.event.base.BaseEvent;
 import io.github.theword.queqiao.core.exception.rcon.RconException;
 import io.github.theword.queqiao.core.extension.QueQiaoExtension;
+import io.github.theword.queqiao.core.extension.QueQiaoExtensionDiscovery;
 import io.github.theword.queqiao.core.handle.HandleProtocolMessage;
 import io.github.theword.queqiao.core.localize.LanguageService;
 import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
@@ -295,6 +297,147 @@ public final class QueQiaoRuntime {
             configurer.accept(runtime.configRegistry);
         }
         return runtime;
+    }
+
+    // ------------------------------------------------------------------
+    // 便捷启动 API
+    //
+    // 普通平台只需要"平台上下文"（以及可选的扩展来源）这两样东西。
+    // 上面的完整 create(...) 仍然保留，供 Core 测试、需要自定义 configurer /
+    // apiConfigurer 的高级 Host 使用。
+    // ------------------------------------------------------------------
+
+    /**
+     * 创建运行时（不安装任何扩展）
+     *
+     * <p>等价于 {@code create(null, platformContext, null, Collections.emptyList())}。
+     *
+     * @param platformContext 平台上下文，不得为 null
+     * @return 尚未启动的运行时
+     */
+    public static QueQiaoRuntime create(AbstractPlatformContext<?, ?, ?> platformContext) {
+        return create(null, platformContext, null, Collections.emptyList());
+    }
+
+    /**
+     * 创建运行时并安装给定的扩展集合
+     *
+     * @param platformContext 平台上下文，不得为 null
+     * @param extensions      扩展集合，不得为 null；元素不得为 null
+     * @return 尚未启动的运行时
+     */
+    public static QueQiaoRuntime create(
+            AbstractPlatformContext<?, ?, ?> platformContext,
+            Collection<? extends QueQiaoExtension> extensions
+    ) {
+        return create(null, platformContext, null, extensions);
+    }
+
+    /**
+     * 创建运行时，扩展由平台的 {@link QueQiaoExtensionDiscovery} 发现
+     *
+     * <p>Core 不规定发现方式 —— Fabric 的 custom entrypoint、Bukkit 的 PluginManager
+     * 都由各平台自己实现，Core 只接收结果。
+     *
+     * @param platformContext 平台上下文，不得为 null
+     * @param discovery       扩展发现入口，不得为 null；其 {@code discover()} 不得返回 null
+     * @return 尚未启动的运行时
+     */
+    public static QueQiaoRuntime create(
+            AbstractPlatformContext<?, ?, ?> platformContext,
+            QueQiaoExtensionDiscovery discovery
+    ) {
+        return create(platformContext, discoverExtensions(discovery));
+    }
+
+    /**
+     * 创建并启动运行时（不安装任何扩展）
+     *
+     * <p>等价于 {@code create(platformContext)} + {@code runtime.start()}。
+     * 启动失败时沿用实例 {@link #start()} 的语义：抛异常且 Runtime 已完成自清理
+     * （状态 {@link RuntimeState#FAILED}），此处<b>不</b>重复一套回滚逻辑。
+     *
+     * @param platformContext 平台上下文，不得为 null
+     * @return 已启动的运行时
+     */
+    public static QueQiaoRuntime start(AbstractPlatformContext<?, ?, ?> platformContext) {
+        QueQiaoRuntime runtime = create(platformContext);
+        runtime.start();
+        return runtime;
+    }
+
+    /**
+     * 创建并启动运行时，并安装给定的扩展集合
+     *
+     * @param platformContext 平台上下文，不得为 null
+     * @param extensions      扩展集合，不得为 null；元素不得为 null
+     * @return 已启动的运行时
+     */
+    public static QueQiaoRuntime start(
+            AbstractPlatformContext<?, ?, ?> platformContext,
+            Collection<? extends QueQiaoExtension> extensions
+    ) {
+        QueQiaoRuntime runtime = create(platformContext, extensions);
+        runtime.start();
+        return runtime;
+    }
+
+    /**
+     * 创建并启动运行时，扩展由平台的 {@link QueQiaoExtensionDiscovery} 发现
+     *
+     * <p>支持扩展的平台最常用这一条：
+     * <pre>
+     * runtime = QueQiaoRuntime.start(platform, FabricExtensionDiscovery::discover);
+     * </pre>
+     *
+     * @param platformContext 平台上下文，不得为 null
+     * @param discovery       扩展发现入口，不得为 null；其 {@code discover()} 不得返回 null
+     * @return 已启动的运行时
+     */
+    public static QueQiaoRuntime start(
+            AbstractPlatformContext<?, ?, ?> platformContext,
+            QueQiaoExtensionDiscovery discovery
+    ) {
+        QueQiaoRuntime runtime = create(platformContext, discovery);
+        runtime.start();
+        return runtime;
+    }
+
+    /**
+     * 调用发现入口并校验其返回值
+     *
+     * <p>{@code discover()} 返回 null 属于装配错误：静默当成"没有扩展"会让
+     * "平台忘记实现发现"与"平台确实没有扩展"两种情况无法区分。
+     */
+    private static Collection<? extends QueQiaoExtension> discoverExtensions(
+            QueQiaoExtensionDiscovery discovery) {
+        Objects.requireNonNull(discovery, "discovery");
+        Collection<? extends QueQiaoExtension> discovered = discovery.discover();
+        Objects.requireNonNull(
+                discovered,
+                "discovery.discover() 不得返回 null：没有扩展时请返回空集合");
+        return discovered;
+    }
+
+    /**
+     * 创建本 Runtime 的命令路由
+     *
+     * <p><b>为什么由 Runtime 提供</b>：{@link CommandRouter} 需要 Logger、Config、
+     * WebsocketManager 与 reload 回调 —— 这四样都是 Runtime 自己持有的，
+     * 平台没必要（也不应该）逐个取出来再手工组装。
+     *
+     * <p><b>这是方法级泛型</b>：{@code NCS} 只出现在本方法签名里，
+     * Runtime 自身<b>不</b>被参数化（不存在 {@code QueQiaoRuntime<NCS>}），
+     * 因此不会把命令来源类型传播进 Runtime 的状态。
+     *
+     * <p><b>前置条件</b>：Runtime 必须已经 {@link #start()} 成功 ——
+     * {@code WebsocketManager} 只在 start 之后才存在。
+     *
+     * @param <NCS> 平台原生命令来源类型
+     * @return 命令路由
+     */
+    public <NCS> CommandRouter<NCS> createCommandRouter() {
+        return new CommandRouter<>(logger, config, websocketManager, this::reload);
     }
 
     /**
