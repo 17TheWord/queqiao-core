@@ -18,6 +18,7 @@ import io.github.theword.queqiao.core.constant.BaseConstant;
 import io.github.theword.queqiao.core.constant.WebsocketConstantMessage;
 import io.github.theword.queqiao.core.event.base.BaseEvent;
 import io.github.theword.queqiao.core.exception.rcon.RconException;
+import io.github.theword.queqiao.core.extension.QueQiaoExtension;
 import io.github.theword.queqiao.core.handle.HandleProtocolMessage;
 import io.github.theword.queqiao.core.localize.LanguageService;
 import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
@@ -37,6 +38,8 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
@@ -156,7 +159,8 @@ public final class QueQiaoRuntime {
     private QueQiaoRuntime(
             Logger logger,
             AbstractPlatformContext<?, ?, ?> platformContext,
-            Consumer<List<Api<?, ?>>> apiConfigurer
+            Consumer<List<Api<?, ?>>> apiConfigurer,
+            Collection<? extends QueQiaoExtension> extensions
     ) {
         this.logger = logger;
         this.gson = GsonUtils.getGson();
@@ -173,7 +177,10 @@ public final class QueQiaoRuntime {
         // 再等服务器启动完成，不必在构造瞬间就拿到版本。
         this.serverStatusCollector = new ServerStatusCollector(
                 platformContext::getServerType, platformContext::getServerVersion, logger);
-        // 协议层接线：先铺默认批次，再交给使用方自由增删（自愿注册）。
+        // 协议层接线（固定顺序，全部发生在 ProtocolRouter 构造之前）：
+        //   1. 铺默认批次   2. 交给使用方自由增删（自愿注册）   3. 安装 Extension 贡献的 API
+        // 三者写入的是<b>同一份</b>列表，因此 Extension 与内置 API 共享同一张路由表，
+        // 不存在第二套路由，也不会因为"来源不同"而产生行为差异。
         // 这里传入 this::sendRconCommand 是安全的：该 lambda 只在收到请求时才会被调用，
         // 此时对象早已构造完成（构造期间不会被发布）。
         List<Api<?, ?>> apis = new ArrayList<>(
@@ -181,7 +188,41 @@ public final class QueQiaoRuntime {
         if (apiConfigurer != null) {
             apiConfigurer.accept(apis);
         }
+        installExtensions(extensions, apis);
         this.handleProtocolMessage = new HandleProtocolMessage(logger, this.gson, apis, this.utils);
+    }
+
+    /**
+     * 安装 Extension：把每个扩展贡献的 API 加入同一份最终 API 集合
+     *
+     * <p>注册阶段结束时<b>无条件 seal</b>（含异常路径）：扩展即使保存了 context 引用，
+     * 也无法在装配结束后再向路由表追加 API，从而保住"路由表构造后不可变"这一不变量。
+     *
+     * <p><b>fail-fast</b>：集合含 null 元素、或任一扩展的 register 抛异常时，
+     * 直接让 Runtime 构造失败。不采用"记日志后继续启动"——因为此时已可能有部分 API
+     * 被注册，继续启动会得到一个状态不明确的 Runtime。
+     *
+     * @param extensions 平台宿主提供的扩展集合，不得为 null；元素不得为 null
+     * @param apis       Runtime 正在装配的 API 列表
+     */
+    private static void installExtensions(
+            Collection<? extends QueQiaoExtension> extensions, List<Api<?, ?>> apis) {
+        RuntimeExtensionContext context = new RuntimeExtensionContext(apis);
+        try {
+            for (QueQiaoExtension extension : extensions) {
+                if (extension == null) {
+                    throw new NullPointerException("extensions 中不得包含 null 元素");
+                }
+                try {
+                    extension.register(context);
+                } catch (RuntimeException e) {
+                    throw new IllegalStateException(
+                            "Failed to register extension: " + extension.getClass().getName(), e);
+                }
+            }
+        } finally {
+            context.seal();
+        }
     }
 
     /**
@@ -189,6 +230,9 @@ public final class QueQiaoRuntime {
      *
      * <p><b>构造不变量</b>：平台实现是 API 边界的必填依赖，此处立即校验并指明参数名。
      * 若不在此拦截，会拖到"第一条协议请求"或"第一条命令"执行时才抛 NPE，定位成本很高。
+     *
+     * <p>本 overload 不安装任何 {@link QueQiaoExtension}，等价于
+     * {@code create(configurer, platformContext, apiConfigurer, Collections.emptyList())}。
      *
      * @param configurer 可选的启动期 Schema 注册回调
      * @param platformContext 平台上下文；服务端类型、版本、是否模组端均由它提供，
@@ -202,13 +246,50 @@ public final class QueQiaoRuntime {
             AbstractPlatformContext<?, ?, ?> platformContext,
             Consumer<List<Api<?, ?>>> apiConfigurer
     ) {
+        return create(configurer, platformContext, apiConfigurer, Collections.emptyList());
+    }
+
+    /**
+     * 创建运行时，并安装平台宿主提供的 {@link QueQiaoExtension}
+     *
+     * <p><b>API 装配顺序</b>（全部发生在 ProtocolRouter 构造之前）：
+     * <pre>
+     * DefaultApis（Core 默认能力）
+     *     → apiConfigurer（Runtime host 自己的 API 配置）
+     *     → Extensions（外部附属模块贡献的 API）
+     *     → 注册阶段 seal
+     *     → HandleProtocolMessage / ProtocolRouter
+     * </pre>
+     * Extension 与内置 API 进入<b>同一份</b>最终集合，因此复用同一套路由、响应封装与 echo 机制，
+     * 不存在第二套路由表。
+     *
+     * <p><b>fail-fast</b>：{@code extensions} 为 null、含 null 元素，或任一扩展的
+     * {@link QueQiaoExtension#register} 抛异常时，本方法直接失败，
+     * <b>不会</b>返回一个只装配了一部分 Extension 的 Runtime。
+     *
+     * @param configurer      可选的启动期 Schema 注册回调
+     * @param platformContext 平台上下文，不得为 null
+     * @param apiConfigurer   可选的 Api 装配回调，可为 null
+     * @param extensions      平台宿主发现并创建的扩展集合，不得为 null；无扩展时传
+     *                        {@link Collections#emptyList()}，<b>不要</b>用 null 表示"没有扩展"
+     * @return 尚未启动的运行时
+     */
+    public static QueQiaoRuntime create(
+            Consumer<ConfigRegistry> configurer,
+            AbstractPlatformContext<?, ?, ?> platformContext,
+            Consumer<List<Api<?, ?>>> apiConfigurer,
+            Collection<? extends QueQiaoExtension> extensions
+    ) {
         Objects.requireNonNull(
                 platformContext, "platformContext 不能为 null：平台必须提供 AbstractPlatformContext 实现");
+        Objects.requireNonNull(
+                extensions, "extensions 不能为 null：无扩展时请传 Collections.emptyList()");
         Logger runtimeLogger = LoggerFactory.getLogger(BaseConstant.MODULE_NAME);
         QueQiaoRuntime runtime = new QueQiaoRuntime(
                 runtimeLogger,
                 platformContext,
-                apiConfigurer
+                apiConfigurer,
+                extensions
         );
         if (configurer != null) {
             configurer.accept(runtime.configRegistry);
