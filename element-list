@@ -1,8 +1,6 @@
-io.github.theword.queqiao.core
+io.github.theword.queqiao.core.api
 io.github.theword.queqiao.core.command
-io.github.theword.queqiao.core.command.subCommand
-io.github.theword.queqiao.core.command.subCommand.client
-io.github.theword.queqiao.core.command.subCommand.server
+io.github.theword.queqiao.core.command.builtin
 io.github.theword.queqiao.core.config
 io.github.theword.queqiao.core.config.codec
 io.github.theword.queqiao.core.config.exception
@@ -25,8 +23,8 @@ io.github.theword.queqiao.core.exception.status
 io.github.theword.queqiao.core.handle
 io.github.theword.queqiao.core.localize
 io.github.theword.queqiao.core.payload
+io.github.theword.queqiao.core.platform
 io.github.theword.queqiao.core.protocol
-io.github.theword.queqiao.core.protocol.handler
 io.github.theword.queqiao.core.protocol.handler.status
 io.github.theword.queqiao.core.rcon
 io.github.theword.queqiao.core.response
