@@ -16,38 +16,20 @@ import io.github.theword.queqiao.core.event.model.TranslateModel;
 import io.github.theword.queqiao.core.translation.TranslationService;
 
 /**
- * 平台上下文：core 与具体服务端之间的<b>唯一</b>接入点
+ * 平台上下文：core 与具体服务端之间的唯一接入点。
  *
- * <p>平台侧继承本类并实现其中的抽象原语；core 侧只通过本类的公开方法访问平台能力，
- * 因此 core 不依赖任何具体服务端的类型。
+ * <p>平台侧继承本类并实现抽象原语，core 侧只通过本类的公开方法访问平台能力，
+ * 因此 core 不依赖任何具体服务端类型。本类只描述"平台本身能做什么"（元数据、玩家查询、
+ * 组件转换、广播、私聊、Title、ActionBar、数据目录、翻译服务）；命令来源相关能力
+ * （回执与权限判定）属于 {@code CommandExecutionContext}。
  *
- * <p><b>职责边界（重要）</b>：本类只描述"平台本身能做什么"——
- * 平台元数据、玩家查询、组件转换、广播、私聊、Title、ActionBar、数据目录与翻译服务。
- * <b>不负责</b>命令来源相关能力：回执（{@code reply}）与权限判定已归属
- * {@code CommandExecutionContext}，命令来源的类型转换也不在本类。
- * 两者职责完全分离：
- * <pre>
- * AbstractPlatformContext   平台整体能力
- * CommandExecutionContext   命令来源能力（谁发起的 / 如何回复 / 其权限）
- * </pre>
+ * <p>公开方法统一返回 {@link PlatformResult}，不依赖任何协议类型 —— 把它翻译成协议状态
+ * 是 {@code Api} 层的职责。core 侧调用的公开方法签名中不出现 {@code S / C / P}，
+ * 因此持有 {@code AbstractPlatformContext<?, ?, ?>} 时仍可直接调用。
  *
- * <p><b>结果表达</b>：平台操作统一返回 {@link PlatformResult}，
- * 用 {@link PlatformResultCode} 表达"平台侧发生了什么"。
- * 本类<b>不</b>依赖 {@code ProtocolException}、{@code Response}、
- * {@code PrivateMessageResponse} 或任何协议类型——
- * 把 {@link PlatformResult} 翻译成协议状态是 {@code Api} 层的职责。
- * 因此其它模块（命令层、未来的非协议调用方）也可以直接调用本类并消费结果，
- * 不需要经过 Api / WebSocket。
- *
- * <p><b>公开方法签名约定（重要）</b>：core 侧调用的公开方法签名中<b>不出现</b>
- * {@code S / C / P} 这三个类型参数。这样 core 侧持有
- * {@code AbstractPlatformContext<?, ?, ?>} 时仍可直接调用，
- * 无需到处传播通配符；凡是要用到平台类型 P / C 的操作，
- * 都在本类内部一次性完成。
- *
- * <p><b>延迟绑定</b>：{@link #getServerType()} 与 {@link #getServerVersion()}
- * 只要求在本上下文被使用前（即 Runtime {@code start()} 之后）可用，
- * 不要求构造时即可用。因此平台可以在服务端实例就绪之前先构造本上下文。
+ * <p>构造时即持有服务端实例；{@link #getServerType()}、{@link #getServerVersion()} 与
+ * {@link #getDataDirectory()} 必须不晚于 Runtime {@code start()} 可用 ——
+ * Core 从 {@code start()} 起开始使用它们。
  *
  * @param <S> 服务端实例类型
  * @param <C> 消息组件类型
@@ -56,18 +38,12 @@ import io.github.theword.queqiao.core.translation.TranslationService;
 public abstract class AbstractPlatformContext<S, C, P> {
 
     /**
-     * 目标玩家不存在的说明
-     *
-     * <p>与历史上 {@code PrivateMessageResponse.playerNotFound()} 的文案保持一致，
-     * 便于非协议调用方直接展示。
+     * 目标玩家不存在时返回给调用方的说明文本。
      */
     private static final String MESSAGE_PLAYER_NOT_FOUND = "Target player not found.";
 
     /**
-     * 平台未实现标题功能的说明
-     *
-     * <p>属于<b>平台层</b>的文案：它描述的是平台能力缺失，不是协议状态。
-     * 协议层不应拥有这条文本，因此不放在 {@code ProtocolConstants}。
+     * 平台未实现标题功能时返回的说明文本。
      */
     private static final String MESSAGE_TITLE_UNSUPPORTED = "当前平台未实现标题功能";
 
@@ -77,28 +53,17 @@ public abstract class AbstractPlatformContext<S, C, P> {
     private static final String MESSAGE_ACTIONBAR_UNSUPPORTED = "当前平台未实现 ActionBar 功能";
 
     /**
-     * 基类自身的日志实现
-     *
-     * <p>只用于基类<b>自己创建</b>的组件（当前为 {@link #getTranslationService()} 的
-     * {@link TranslationService}）。Core 的统一日志体系以
-     * {@link BaseConstant#MODULE_NAME} 为 logger 名，此处保持一致，
-     * 不引入平台侧的 logger 注入。
+     * 基类自建组件使用的日志实现，logger 名取 {@link BaseConstant#MODULE_NAME}。
      */
     private static final Logger LOGGER = LoggerFactory.getLogger(BaseConstant.MODULE_NAME);
 
     /**
-     * 服务端实例
-     *
-     * <p>平台需自行保证该实例在 {@link #getPlayers()} 等原语被调用前可用。
+     * 服务端实例，构造时给出。
      */
     public final S server;
 
     /**
-     * 平台翻译服务（首次 {@link #getTranslationService()} 时创建）
-     *
-     * <p>volatile + 双重检查：保证多线程下只创建一个实例，且读路径无锁。
-     * 创建时机刻意推迟到第一次获取，因此<b>父类构造期间不会</b>调用可覆盖的
-     * {@link #getDataDirectory()}。
+     * 平台翻译服务，首次 {@link #getTranslationService()} 时创建；volatile + 双重检查。
      */
     private volatile TranslationService translationService;
 
@@ -128,12 +93,9 @@ public abstract class AbstractPlatformContext<S, C, P> {
     public abstract String getServerVersion();
 
     /**
-     * 是否为模组服务端
-     *
      * @return 是否为模组服务端
-     * @deprecated 数据目录应由 {@link #getDataDirectory()} 直接给出。
-     *             "模组 = config 目录"只是常见规律，用它推导路径会把平台的目录差异
-     *             编码进调用方；新代码请直接使用 {@link #getDataDirectory()}。
+     * @deprecated 改用 {@link #getDataDirectory()} —— "模组 = config 目录"只是常见规律，
+     *             由它推导路径会把平台差异编码进调用方。
      */
     @Deprecated
     public boolean isModServer() {
@@ -141,16 +103,14 @@ public abstract class AbstractPlatformContext<S, C, P> {
     }
 
     /**
-     * 平台数据目录（{@code config.yml} 与 {@code translate/} 的父目录）
+     * 返回 QueQiao 数据目录（{@code config.yml} 与 {@code translate/} 的父目录）。
      *
-     * <p>默认按 {@link ServerTypeConstant#isModType(String)} 推导：模组端
-     * {@code config/QueQiao}，插件端 {@code plugins/QueQiao}（均相对工作目录）。
-     * 这与历史目录布局<b>完全一致</b>，因此既有平台不需要重写本方法。
+     * <p>默认根据服务端类型选择 config 或 plugins 目录，且返回相对工作目录的相对路径；
+     * 特殊平台可覆盖此方法，覆盖后也允许返回绝对路径。
      *
-     * <p>不符合该规律的平台（例如配置走 {@code config/} 的插件平台）直接覆盖本方法，
-     * 无需改动 Core —— Core 只认这一个入口，不再用布尔量二次推导。
+     * <p>同一个 PlatformContext 生命周期内应返回稳定值 —— Runtime 用它定位配置与翻译。
      *
-     * @return 数据目录，相对工作目录
+     * @return 数据目录
      */
     public Path getDataDirectory() {
         return ServerTypeConstant.isModType(getServerType())
@@ -188,17 +148,9 @@ public abstract class AbstractPlatformContext<S, C, P> {
     public abstract UUID getPlayerUUID(P player);
 
     /**
-     * 广播组件给所有玩家
+     * 广播组件给所有玩家。
      *
-     * <p><b>Core 语义只有"广播成功 / 广播失败"</b>，因此不返回任何数据：
-     * 底层平台 API 的返回值（例如渲染后的文本）对 Core 调用者没有业务意义，
-     * 不应作为返回值暴露出来。
-     *
-     * <p>{@code C} 本身<b>不会</b>离开平台层。
-     *
-     * <p>若将来 Core 确实需要广播人数、消息 ID 等领域数据，
-     * 应引入专门的领域结果类型（如 {@code BroadcastResult}），
-     * 而不是保留一个无法回答"这个值代表什么"的 {@code String}。
+     * <p>Core 只区分成功与失败，因此不返回任何领域数据；{@code C} 不会离开平台层。
      *
      * @param component 平台组件
      * @return 成功 / 失败结果
@@ -251,23 +203,16 @@ public abstract class AbstractPlatformContext<S, C, P> {
     }
 
     // ------------------------------------------------------------------
-    // 翻译能力
-    //
-    // 翻译的归属是"平台"：目录在哪、是否具备原生组件解析能力，都由平台决定。
-    // Runtime 只按配置调度 TranslationService 的生命周期，不持有它。
+    // 翻译能力（归属平台：目录与原生解析方式由平台决定）
     // ------------------------------------------------------------------
 
     /**
-     * 获取本平台的标准翻译服务
+     * 返回本平台的翻译服务。
      *
-     * <p><b>基类负责创建，平台无需自己 new</b>：同一个上下文实例始终返回<b>同一个</b>
+     * <p>基类负责创建，平台无需自己 new：同一个上下文实例始终返回同一个
      * {@link TranslationService}，目录取自 {@link #getDataDirectory()} 下的 {@code translate}。
-     *
-     * <p>首次调用时才创建（线程安全的懒初始化），因此<b>构造期间不会</b>调用可覆盖的
-     * {@link #getDataDirectory()}，子类字段也不会被"父类构造先于子类字段初始化"坑到。
-     *
-     * <p>创建只记录目录与日志实现，<b>不读磁盘</b>；是否加载、何时加载由
-     * {@link TranslationService#reload(boolean)} 决定。
+     * 首次调用时才创建（线程安全的懒初始化），且创建过程不读磁盘 ——
+     * 是否加载由 {@link TranslationService#reload(boolean)} 决定。
      *
      * @return 平台翻译服务，永不为 null
      */
@@ -287,19 +232,18 @@ public abstract class AbstractPlatformContext<S, C, P> {
     }
 
     /**
-     * 把平台原生消息组件解析为 Core 的 {@link TranslateModel}（可选能力）
+     * 把平台原生消息组件解析为 {@link TranslateModel}（可选能力）。
      *
-     * <p>默认返回 {@code null}，表示<b>平台没有提供原生组件结构化解析</b>——
-     * 这完全合法，Core 与 Runtime 都不会因此失败。
+     * <p>默认返回 {@code null}，表示平台不提供结构化解析 —— 这是合法状态，Core 与 Runtime
+     * 都不会因此失败。具备"翻译键 + 参数"结构的平台可覆盖本方法，把组件递归拆成
+     * {@link TranslateModel}。
      *
-     * <p>具备"翻译键 + 参数"结构的平台（Minecraft 系）覆盖本方法，把组件递归拆成
-     * {@link TranslateModel}；译文取 {@link #getTranslationService()}。
-     *
-     * <p><b>不要</b>用 {@code String.valueOf(component)} 之类的平台默认渲染冒充解析结果：
-     * 那等于把已经本地化的文本塞进翻译模型，下游会再翻译一次。
+     * <p>无法解析时，平台可以使用自己的原始显示文本作为
+     * {@link TranslateModel#getText()} 的取值；但不要把渲染文本当作
+     * {@link TranslateModel#getKey()} 或 {@link TranslateModel#getArgs()} 的结构化解析结果。
      *
      * @param component 平台组件
-     * @return 解析结果；平台未实现原生解析时返回 null
+     * @return 解析结果；平台未提供结构化解析时返回 null
      */
     public TranslateModel parseTranslateModel(C component) {
         return null;
@@ -384,19 +328,13 @@ public abstract class AbstractPlatformContext<S, C, P> {
     }
 
     /**
-     * 发送私聊消息，并返回结果
-     *
-     * <p>查找玩家、发送、构造结果三步都在本方法内完成——只有平台侧认识玩家类型 P，
-     * 因此这类"碰 P"的操作统一在本类内部收口，不向外暴露泛型。
-     *
-     * <p>成功时 data 为目标玩家的 Core DTO 快照（{@link PlayerModel}），
-     * 因此调用方可以据此构造自己的响应，而不需要知道平台玩家类型。
+     * 查找玩家、发送私聊，并返回结果。
      *
      * @param nickname 目标玩家昵称，可为 null
      * @param uuid     目标玩家 UUID，可为 null
      * @param json     消息内容，JSON 格式
      * @return 未找到玩家时为 {@link PlatformResultCode#PLAYER_NOT_FOUND}；
-     * 发送失败时透传发送结果码；成功时 data 为目标玩家快照
+     * 发送失败时透传发送结果码；成功时 data 为目标玩家的 {@link PlayerModel} 快照
      */
     public final PlatformResult<PlayerModel> sendPrivateMessage(String nickname, UUID uuid, JsonElement json) {
         P player = findPlayer(nickname, uuid == null ? null : uuid.toString());

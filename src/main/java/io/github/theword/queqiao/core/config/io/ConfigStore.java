@@ -13,19 +13,15 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 
 /**
- * 配置文件写入器
+ * 配置文件的路径解析与写入。
  *
- * <p><b>本类不在正常启动路径上被调用</b>——正常启动只读不写 {@code config.yml}。
- * 它提供给<b>真正需要覆盖用户文件</b>的场景：
- * 未来的 {@code ConfigMigration}、显式的"同步配置"命令。
+ * <p>只接收调用方给出的路径，不推断模组端 / 插件端 —— 数据目录由
+ * {@code AbstractPlatformContext#getDataDirectory()} 决定。
  *
- * <p>保证：
- * <ul>
- *     <li><b>原子写</b>：临时文件 → 完整写入 → fsync → {@code ATOMIC_MOVE}。
- *         文件系统不支持时降级为 {@code REPLACE_EXISTING} 并<b>记录日志</b>；</li>
- *     <li><b>可恢复备份</b>：轮换保留最多 {@value #MAX_BACKUPS} 份，
- *         避免单份备份被下一次写入覆盖。</li>
- * </ul>
+ * <p>写入保证：原子替换（临时文件 → fsync → {@code ATOMIC_MOVE}，文件系统不支持时降级为
+ * 普通替换并记录日志），以及最多 {@value #MAX_BACKUPS} 份的轮换备份。
+ *
+ * <p>正常启动只读不写 {@code config.yml}；写入路径服务于显式覆盖用户文件的场景。
  *
  * @since 0.6.11
  */
@@ -42,15 +38,9 @@ public final class ConfigStore {
     }
 
     /**
-     * 解析配置文件路径
+     * 返回数据目录下的 {@code config.yml} 路径。
      *
-     * <p>配置文件恒为平台数据目录下的 {@code config.yml}。目录<b>不再由布尔量推导</b>：
-     * 插件端 {@code plugins/QueQiao} 与模组端 {@code config/QueQiao} 的差异已经收敛在
-     * {@code AbstractPlatformContext#getDataDirectory()}，这里只负责拼上文件名。
-     * 这样"目录从哪来"只有一个来源，不会出现两处各自推导而漂移。
-     *
-     * @param dataDirectory 平台数据目录，通常取自
-     *                      {@code AbstractPlatformContext#getDataDirectory()}
+     * @param dataDirectory 平台数据目录
      * @return 配置文件路径
      */
     public static Path resolveConfigPath(Path dataDirectory) {

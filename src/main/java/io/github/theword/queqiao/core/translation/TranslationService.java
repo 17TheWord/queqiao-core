@@ -23,26 +23,16 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
 /**
- * 翻译服务类。
+ * 服务端游戏文本的翻译补全服务。
  *
- * <p>该服务负责从指定目录加载 JSON 格式的翻译库，并为事件消息提供多语言转换支持。
- * 翻译数据通过不可变快照发布，因此翻译调用不需要获取锁。
+ * <p>从指定目录加载 JSON 翻译表（键 → 文本），按翻译键查询并格式化文本。数据以不可变
+ * 快照发布，查询无需加锁。它只服务于 QueQiao 自身事件文本的补全，不是通用多语言框架。
  *
- * <p><b>归属</b>：本服务属于<b>平台</b>，不属于 Runtime。目录由平台决定
- * （见 {@code AbstractPlatformContext#getDataDirectory()}），Runtime 只按配置
- * 调度它的生命周期（{@link #reload(boolean)} / {@link #disable()}）。
- * 因此本类不再持有 {@code Config}，也不再自行推导配置目录。
+ * <p>归属平台：目录取自 {@code AbstractPlatformContext#getDataDirectory()}，
+ * Runtime 只按配置调度 {@link #reload(boolean)} / {@link #disable()}。构造不读磁盘。
  *
- * <p><b>构造不加载</b>：构造只记录目录与日志实现，不做任何 I/O。是否加载、
- * 何时加载完全由 {@link #reload(boolean)} 决定。
- *
- * <p><b>两级错误处理（重要）</b>：
- * <ul>
- *     <li><b>目录级</b>失败（目录无法枚举、路径存在但不是目录）：保留上一份完整快照，
- *         <b>不</b>发布新 Map —— 短暂 I/O 故障不应该把已有翻译清空；</li>
- *     <li><b>单文件级</b>失败（读取失败、解析失败、根节点不是 JSON object）：只跳过该文件，
- *         其余文件照常合并，扫描结束后统一发布。一个坏文件不会让整个目录加载失败。</li>
- * </ul>
+ * <p>失败分两级：目录无法枚举时保留上一份快照，不清空已有翻译；单个文件不可用时
+ * 只跳过该文件，其余文件照常合并。
  *
  * @since 0.6.0
  */
@@ -53,9 +43,7 @@ public class TranslationService {
     private final Logger logger;
 
     /**
-     * 翻译文件所在目录
-     *
-     * <p>构造后不再变化；{@link #reload(boolean)} 每次都以它为准重新扫描。
+     * 翻译文件所在目录，构造后不再变化。
      */
     private final Path directory;
 
@@ -65,9 +53,9 @@ public class TranslationService {
     private volatile TranslationState state = TranslationState.disabled();
 
     /**
-     * 构造翻译服务（<b>不加载任何文件</b>）。
+     * 构造翻译服务，不加载任何文件。
      *
-     * @param directory 翻译文件目录，不得为 null；目录不存在时视为"没有翻译内容"
+     * @param directory 翻译文件目录，不得为 null；目录不存在时视为没有翻译内容
      * @param logger    日志实现，不得为 null
      */
     public TranslationService(Path directory, Logger logger) {
@@ -76,27 +64,22 @@ public class TranslationService {
     }
 
     /**
-     * 获取翻译服务当前的启用状态。
-     *
-     * @return true 表示服务已准备就绪且存在载入的翻译条目。
+     * @return true 表示已加载翻译条目且服务处于启用状态
      */
     public boolean isEnabled() {
         return state.enabled;
     }
 
     /**
-     * 按给定开关重新加载翻译目录并发布新状态。
+     * 按开关重新加载翻译目录并发布新状态。
      *
-     * <p>{@code enabled == false} 等价于停用：直接发布空状态，<b>不</b>触碰磁盘。
+     * <p>{@code enabled == false} 等价于停用，不触碰磁盘。启用时先把全部文件加载到局部
+     * Map 再整体发布，读线程不会看到中间状态；并发 reload / disable 由实例锁串行化。
      *
-     * <p>启用时所有文件先加载到局部 Map，完成后再整体发布。读取线程只读取 volatile
-     * 状态，不会观察到清空和填充之间的中间状态。并发 reload/disable 由实例锁串行化。
+     * <p>目录无法枚举时保留上一份快照；单个文件不可用时只跳过该文件。
+     * 只有成功加载的条目为零时才停用。
      *
-     * <p><b>失败语义分两级</b>：目录无法枚举时保留上一份快照并直接返回
-     * （见 {@link #scanAndLoad(Path)}）；单个文件不可用时只跳过该文件，其余文件照常合并
-     * （见 {@link #loadTranslateFile(Path)}）。只有「成功加载的有效条目为零」才停用。
-     *
-     * @param enabled 是否启用翻译；对应配置项 {@code enable_translation}
+     * @param enabled 是否启用翻译，对应配置项 {@code enable_translation}
      */
     public synchronized void reload(boolean enabled) {
         if (!enabled) {
@@ -125,13 +108,9 @@ public class TranslationService {
     }
 
     /**
-     * 扫描目录并载入翻译数据。
+     * 扫描目录并载入翻译数据。单文件错误不会冒泡到这里。
      *
-     * <p><b>这里是目录级错误的唯一出口</b>：目录无法枚举（或路径存在但不是目录）时抛出
-     * {@link IOException}，由调用方保留上一份完整状态。单文件错误不会冒泡到这里 ——
-     * {@link #loadTranslateFile(Path)} 已经把每个文件各自隔离掉了。
-     *
-     * @throws IOException 目录存在但无法枚举时抛出；调用方会保留上一份完整状态
+     * @throws IOException 目录无法枚举时抛出；调用方保留上一份完整状态
      */
     private Map<String, String> scanAndLoad(Path folder) throws IOException {
         Map<String, String> result = new LinkedHashMap<>();
@@ -165,14 +144,10 @@ public class TranslationService {
     }
 
     /**
-     * 读取并解析单个 JSON 翻译文件。文件格式为 JSON object，值必须为字符串。
+     * 读取并解析单个 JSON 翻译文件。文件为 JSON object，值必须为字符串。
      *
-     * <p><b>单文件失败被隔离在本方法内</b>：读取失败、解析失败或根节点不是 JSON object 时，
-     * 只记录文件名与原因并返回<b>空 Map</b>，调用方据此跳过本文件、继续处理其余文件。
-     *
-     * <p>返回空 Map 而不是「已解析的部分结果」是刻意的：文件级异常意味着这份文件整体不可信，
-     * 把半份内容合进快照会让「哪些条目最终生效」变得不可预期。与之相对，<b>单条</b>取值不是
-     * 字符串时只跳过该条目，同一文件里的其它有效条目照常保留。
+     * <p>失败被隔离在本方法内：读取失败、解析失败或根节点不是 JSON object 时记日志并返回
+     * 空 Map，调用方据此跳过该文件。单条取值不是字符串时只跳过该条目。
      *
      * @param file 待读取的翻译文件
      * @return 该文件提供的键值对；文件不可用时为空 Map（非 null）
@@ -210,12 +185,13 @@ public class TranslationService {
     }
 
     /**
-     * 对外翻译接口。
-     * 根据传入的翻译键映射对应文本，并使用 String.format 填充参数。
+     * 按翻译键查询并格式化文本。
      *
-     * @param key  翻译键（例如 death.attack.player）
-     * @param args 翻译参数数组，对应模板中的 %s 等占位符
-     * @return 翻译并格式化后的文本，或原始 Key
+     * <p>未启用、key 为 null 或未命中时返回 key 本身。
+     *
+     * @param key  翻译键，例如 {@code death.attack.player}
+     * @param args 与模板中 {@code %s} / {@code %1$s} 对应的参数
+     * @return 格式化后的文本，或 key 本身
      */
     public String translate(String key, Object[] args) {
         TranslationState current = state;
@@ -245,7 +221,7 @@ public class TranslationService {
     }
 
     /**
-     * 停用翻译服务。通过发布空状态完成清理，不修改任何已发布 Map。
+     * 停用翻译服务：发布空状态，不修改任何已发布的 Map。
      */
     public synchronized void disable() {
         publish(TranslationState.disabled());

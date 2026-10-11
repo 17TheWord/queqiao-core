@@ -29,14 +29,15 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
 /**
- * 服务器状态采集器
+ * 服务器状态采集器。
  *
- * <p><b>Runtime 实例级</b>：本类由 {@code QueQiaoRuntime} 持有并管理生命周期，
- * 所有可变状态（快照缓存、探测目标、刷新线程池与任务、指标采集器、日志实现）
- * 都是<b>实例字段</b>，不再存在 JVM 级静态状态。
- * 因此同一个 JVM 中并存的两个 Runtime 各自拥有独立的采集器，互不干扰。
+ * <p>生命周期由 {@code QueQiaoRuntime} 管理。全部可变状态（快照缓存、探测目标、
+ * 刷新线程池与任务、指标采集器、日志实现）都是实例字段，同一 JVM 中并存的多个
+ * Runtime 各自持有独立实例，互不干扰。
  *
- * <p>采集算法（Ping 与缓存策略）保持不变，本次只把静态生命周期改为实例生命周期。
+ * <p>{@code regex.yml} 与 {@code server.properties} 的定位沿用本类自己的候选路径
+ * （{@code config/QueQiao/}、{@code QueQiao/}），与
+ * {@code AbstractPlatformContext#getDataDirectory()} 无关。
  */
 public final class ServerStatusCollector {
     private static final int DEFAULT_SERVER_PORT = 25565;
@@ -71,11 +72,10 @@ public final class ServerStatusCollector {
     private static final long SNAPSHOT_CACHE_TTL_MILLIS = 2000L;
 
     /**
-     * 服务端类型提供者
+     * 服务端类型提供者。
      *
-     * <p>用 Supplier 而非 String，是为了支持<b>延迟获取</b>：平台可能在本实例构造时
-     * 还没拿到服务端实例，只有启动完成后 {@code getServerType()} 才可用。
-     * 每次构建快照时现取，避免把"构造瞬间的值"固化下来。
+     * <p>用 Supplier 而非 String：每次构建快照时现取，避免把构造瞬间的值固化下来。
+     * 允许返回 null。
      */
     private final Supplier<String> serverTypeSupplier;
 
