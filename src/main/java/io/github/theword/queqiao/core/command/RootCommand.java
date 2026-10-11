@@ -24,8 +24,8 @@ import java.util.function.Supplier;
  * {@code LiteralArgumentBuilder}）。
  *
  * <p><b>装配说明</b>：根节点负责把子命令真正需要的窄依赖分发下去。
- * 其中 {@code websocketManager} 由 Runtime 在 {@code start()} 中创建，
- * 因此命令树必须在 Runtime 启动完成后再构建。
+ * 依赖以 {@link Supplier} 形式注入，因此命令树可以在 Runtime 启动之前构建 ——
+ * 只有命令真正执行时才向供应商取值（见 {@code QueQiaoRuntime#createDeferredCommandTree}）。
  *
  * @since 0.5.0
  */
@@ -34,21 +34,22 @@ public class RootCommand<NCS> extends CommandNode<NCS> {
     /**
      * 构造根命令
      *
-     * @param logger           日志实现，不得为 null
-     * @param config           配置运行时状态，不得为 null
-     * @param websocketManager WebSocket 管理器（须在 Runtime.start() 之后获取），不得为 null
-     * @param reloadAction     触发 Runtime 重载的动作，返回重载结果，不得为 null
+     * @param logger            日志实现，不得为 null
+     * @param configSupplier    配置运行时状态供应商，不得为 null；取值时尚未就绪可返回 null
+     * @param websocketSupplier WebSocket 管理器供应商，不得为 null；取值时尚未就绪可返回 null
+     * @param reloadAction      触发 Runtime 重载的动作，返回重载结果，不得为 null；
+     *                          {@code get()} 返回 null 表示运行时尚未就绪
      */
     public RootCommand(
             Logger logger,
-            Config config,
-            WebsocketManager websocketManager,
+            Supplier<Config> configSupplier,
+            Supplier<WebsocketManager> websocketSupplier,
             Supplier<ReloadResult> reloadAction) {
         super(logger);
         addChild(new HelpCommand<>(logger));
         addChild(new ReloadCommand<>(logger, reloadAction));
-        addChild(new ServerCommand<>(logger, config, websocketManager));
-        addChild(new ClientCommand<>(logger, config, websocketManager));
+        addChild(new ServerCommand<>(logger, configSupplier, websocketSupplier));
+        addChild(new ClientCommand<>(logger, configSupplier, websocketSupplier));
     }
 
     /**
@@ -79,7 +80,6 @@ public class RootCommand<NCS> extends CommandNode<NCS> {
      */
     @Override
     protected void onExecute(CommandExecutionContext<NCS> context, List<String> args) {
-        context.reply("请使用帮助命令查看可用子命令：" + BaseConstant.COMMAND_HEADER + " help"
-        );
+        context.reply("请使用帮助命令查看可用子命令：" + BaseConstant.COMMAND_HEADER + " help");
     }
 }

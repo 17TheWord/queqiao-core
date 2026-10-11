@@ -15,7 +15,9 @@ import io.github.theword.queqiao.core.config.io.ConfigWriter;
 import io.github.theword.queqiao.core.api.Api;
 import io.github.theword.queqiao.core.api.DefaultApis;
 import io.github.theword.queqiao.core.command.CommandRouter;
+import io.github.theword.queqiao.core.command.RootCommand;
 import io.github.theword.queqiao.core.constant.BaseConstant;
+import io.github.theword.queqiao.core.constant.CommandConstant;
 import io.github.theword.queqiao.core.constant.WebsocketConstantMessage;
 import io.github.theword.queqiao.core.event.base.BaseEvent;
 import io.github.theword.queqiao.core.exception.rcon.RconException;
@@ -45,6 +47,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * 鹊桥运行时：装配并托管一次运行所需的全部 Core 组件。
@@ -388,6 +391,58 @@ public final class QueQiaoRuntime {
      */
     public <NCS> CommandRouter<NCS> createCommandRouter() {
         return new CommandRouter<>(logger, config, websocketManager, this::reload);
+    }
+
+    /**
+     * 创建一棵<b>在 Runtime 启动之前</b>即可构建的完整命令树。
+     *
+     * <p>调用时 Runtime 可以尚不存在：{@code Config}、{@code WebsocketManager} 与 reload
+     * 都通过 {@code runtimeSupplier} 延迟获取，只有命令真正执行时才取值。
+     * 因此节点名称、子节点与权限元数据在 Runtime 未启动时也可读取，平台可以在注册命令时
+     * 就把整棵树映射到自己的命令 API，无需自行解析路径或实现补全。
+     *
+     * <p>返回的树已冻结（结构不可再修改），Runtime 被替换后
+     * 也无需重建命令树 —— 下一次执行会通过供应商取到新实例。
+     *
+     * <p>Runtime 未就绪（供应商返回 null，或状态不是 {@link RuntimeState#RUNNING}）时，
+     * 依赖运行状态的命令回执 {@link CommandConstant#RUNTIME_NOT_READY} 并安全返回，不抛异常。
+     *
+     * @param logger          日志实现，不得为 null
+     * @param runtimeSupplier 当前 Runtime 的供应商，不得为 null；尚未就绪时可返回 null
+     * @param <NCS>           平台原生命令来源类型
+     * @return 已冻结的完整根命令
+     */
+    public static <NCS> RootCommand<NCS> createDeferredCommandTree(
+            Logger logger,
+            Supplier<QueQiaoRuntime> runtimeSupplier) {
+        Objects.requireNonNull(logger, "logger");
+        Objects.requireNonNull(runtimeSupplier, "runtimeSupplier");
+
+        RootCommand<NCS> root = new RootCommand<>(
+                logger,
+                () -> {
+                    QueQiaoRuntime runtime = runtimeSupplier.get();
+                    return runtime == null ? null : runtime.getConfig();
+                },
+                () -> {
+                    QueQiaoRuntime runtime = runtimeSupplier.get();
+                    return runtime == null ? null : runtime.getWebsocketManager();
+                },
+                () -> {
+                    QueQiaoRuntime runtime = runtimeSupplier.get();
+                    if (runtime == null || runtime.getState() != RuntimeState.RUNNING) {
+                        return null;
+                    }
+                    return runtime.reload();
+                });
+        // 工厂返回的就是完整树：立即冻结，保证后续（含数据包重载导致的重复注册）
+        // 只能读取结构，不可能修改它。
+        root.freeze();
+        return root;
+    }
+
+    public AbstractPlatformContext<?, ?, ?> getPlatformContext() {
+        return platformContext;
     }
 
     /**

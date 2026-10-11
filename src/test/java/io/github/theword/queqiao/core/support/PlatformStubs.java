@@ -6,6 +6,7 @@ import io.github.theword.queqiao.core.config.Config;
 import io.github.theword.queqiao.core.config.ConfigKeys;
 import io.github.theword.queqiao.core.config.schema.ConfigRegistry;
 import io.github.theword.queqiao.core.constant.ServerTypeConstant;
+import io.github.theword.queqiao.core.event.model.PlayerModel;
 import io.github.theword.queqiao.core.exception.rcon.RconException;
 import io.github.theword.queqiao.core.handle.HandleProtocolMessage;
 import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
@@ -223,6 +224,14 @@ public final class PlatformStubs {
         @Override
         public UUID getPlayerUUID(TestPlayer player) {
             return player.getUuid();
+        }
+
+        @Override
+        public PlayerModel getPlayerModel(TestPlayer player) {
+            PlayerModel playerModel = new PlayerModel();
+            playerModel.setNickname(player.getName());
+            playerModel.setUuid(player.getUuid());
+            return playerModel;
         }
 
         @Override

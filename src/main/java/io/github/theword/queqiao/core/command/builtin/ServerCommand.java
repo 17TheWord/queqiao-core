@@ -7,15 +7,16 @@ import io.github.theword.queqiao.core.utils.WebsocketManager;
 import org.slf4j.Logger;
 
 import java.util.List;
+import java.util.function.Supplier;
 
 public class ServerCommand<NCS> extends CommandNode<NCS> {
 
     public ServerCommand(
             Logger logger,
-            Config config,
-            WebsocketManager websocketManager) {
+            Supplier<Config> configSupplier,
+            Supplier<WebsocketManager> websocketSupplier) {
         super(logger);
-        addChild(new InfoCommand<>(logger, config, websocketManager));
+        addChild(new InfoCommand<>(logger, configSupplier, websocketSupplier));
     }
 
     /**

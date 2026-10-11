@@ -5,6 +5,7 @@ import com.google.gson.JsonPrimitive;
 import io.github.theword.queqiao.core.config.io.ConfigStore;
 import io.github.theword.queqiao.core.constant.BaseConstant;
 import io.github.theword.queqiao.core.constant.ServerTypeConstant;
+import io.github.theword.queqiao.core.event.model.PlayerModel;
 import io.github.theword.queqiao.core.runtime.QueQiaoRuntime;
 import io.github.theword.queqiao.core.runtime.RuntimeState;
 import io.github.theword.queqiao.core.translation.TranslationService;
@@ -305,6 +306,14 @@ class PlatformTranslationServiceTest {
         @Override
         public UUID getPlayerUUID(TestPlayer player) {
             return player.getUuid();
+        }
+
+        @Override
+        public PlayerModel getPlayerModel(TestPlayer player) {
+            PlayerModel playerModel = new PlayerModel();
+            playerModel.setNickname(player.getName());
+            playerModel.setUuid(player.getUuid());
+            return playerModel;
         }
 
         @Override

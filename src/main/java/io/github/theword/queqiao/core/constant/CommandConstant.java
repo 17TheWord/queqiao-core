@@ -8,6 +8,14 @@ package io.github.theword.queqiao.core.constant;
 public class CommandConstant {
     public static final String RELOAD_CONFIG = "加载配置文件完成";
 
+    /**
+     * 运行时尚未就绪（未创建 / 未启动 / 已关闭）时，依赖运行状态的命令的统一回执
+     *
+     * <p>命令树允许在 Runtime 启动之前构建，因此命令执行时依赖可能尚不存在；
+     * 此时各命令回执本消息并直接返回，而不是抛异常。
+     */
+    public static final String RUNTIME_NOT_READY = "鹊桥尚未启动。";
+
     public static final String RECONNECT_MESSAGE = "正在尝试重连 {} 的 WebSocket 客户端...";
     public static final String RECONNECT_NOT_OPEN_CLIENT = "正在重连未打开的 Websocket Client...";
     public static final String RECONNECT_ALL_CLIENT = "正在重连所有 Websocket Client...";

@@ -4,6 +4,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Collection;
 import java.util.UUID;
+import java.util.function.Function;
 
 import com.google.gson.JsonElement;
 import org.slf4j.Logger;
@@ -96,7 +97,7 @@ public abstract class AbstractPlatformContext<S, C, P> {
     /**
      * @return 是否为模组服务端
      * @deprecated 改用 {@link #getDataDirectory()} —— "模组 = config 目录"只是常见规律，
-     *             由它推导路径会把平台差异编码进调用方。
+     * 由它推导路径会把平台差异编码进调用方。
      */
     @Deprecated
     public boolean isModServer() {
@@ -147,6 +148,14 @@ public abstract class AbstractPlatformContext<S, C, P> {
      * @return 玩家 UUID
      */
     public abstract UUID getPlayerUUID(P player);
+
+    /**
+     * 把平台玩家对象转换为 {@link PlayerModel} 快照。
+     *
+     * @param player 玩家
+     * @return {@link PlayerModel} 快照
+     */
+    public abstract PlayerModel getPlayerModel(P player);
 
     /**
      * 广播组件给所有玩家。
@@ -230,6 +239,30 @@ public abstract class AbstractPlatformContext<S, C, P> {
             }
         }
         return service;
+    }
+
+    protected final TranslateModel buildTranslateModel(
+            String key,
+            Object[] args,
+            Function<Object, TranslateModel> parseArgument,
+            String fallbackText
+    ) {
+        TranslateModel[] children = new TranslateModel[args.length];
+        String[] formattedArgs = new String[args.length];
+
+        for (int i = 0; i < args.length; i++) {
+            TranslateModel child = parseArgument.apply(args[i]);
+            children[i] = child;
+            formattedArgs[i] = child.getText();
+        }
+
+        String text = getTranslationService().translate(key, formattedArgs);
+
+        if (text == null || text.equals(key)) {
+            text = fallbackText;
+        }
+
+        return new TranslateModel(key, children, text);
     }
 
     /**

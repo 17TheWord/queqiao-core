@@ -46,6 +46,16 @@ public class TranslateModel {
     }
 
     /**
+     * 将任意值转换为纯文本翻译模型。
+     *
+     * @param value 原始值
+     * @return 不包含翻译键和参数的模型
+     */
+    public static TranslateModel of(Object value) {
+        return new TranslateModel(null, null, String.valueOf(value));
+    }
+
+    /**
      * @return 翻译键
      */
     public String getKey() {

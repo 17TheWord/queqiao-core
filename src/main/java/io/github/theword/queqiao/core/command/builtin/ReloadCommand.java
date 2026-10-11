@@ -25,6 +25,10 @@ public class ReloadCommand<NCS> extends CommandNode<NCS> {
 
     /**
      * 触发 Runtime 重载的动作，返回本次重载的进度消息
+     *
+     * <p>{@code get()} 返回 null 表示运行时尚未就绪（未创建 / 未启动 / 已关闭）。
+     * 命令树允许在 Runtime 启动前构建，因此这里以 null 表达"暂时无法重载"，
+     * 而不是让供应商抛异常 —— 异常会被 {@code CommandNode.execute} 统一转成通用错误提示。
      */
     private final Supplier<ReloadResult> reloadAction;
 
@@ -67,6 +71,10 @@ public class ReloadCommand<NCS> extends CommandNode<NCS> {
     @Override
     protected void onExecute(CommandExecutionContext<NCS> context, List<String> args) {
         ReloadResult result = reloadAction.get();
+        if (result == null) {
+            context.reply(CommandConstant.RUNTIME_NOT_READY);
+            return;
+        }
         for (String message : result.getMessages()) {
             context.reply(message);
         }
