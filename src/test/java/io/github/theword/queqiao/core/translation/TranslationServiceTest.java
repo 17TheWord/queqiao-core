@@ -157,17 +157,21 @@ class TranslationServiceTest {
     }
 
     @Test
-    @DisplayName("损坏文件不参与重复键覆盖：最终值来自后加载的有效文件")
+    @DisplayName("损坏文件不参与重复键覆盖：先前文件的值保留，后续有效文件照常加载")
     void brokenFileDoesNotParticipateInOverride() throws IOException {
         writeJson(tempDir, "a.json", "{\"shared\": \"甲\"}");
         writeJson(tempDir, "b.json", "{\"shared\": \"乙\", ");
-        writeJson(tempDir, "c.json", "{\"shared\": \"丙\"}");
+        // c.json 刻意<b>不再</b>提供 shared：否则它会把 b.json 的（可能的）覆盖再盖回去，
+        // 断言就无论如何都成立，等于没验证 b 究竟有没有参与覆盖。
+        writeJson(tempDir, "c.json", "{\"other\": \"丙\"}");
         TranslationService service = serviceOver(tempDir);
 
         service.reload(true);
 
-        assertEquals("丙", service.translate("shared", new Object[0]),
-                "b.json 已损坏，既不能生效也不能覆盖，最终应是 c.json 的值");
+        assertEquals("甲", service.translate("shared", new Object[0]),
+                "b.json 已损坏，不应覆盖 a.json 的 shared —— 若断言写成「丙」，c.json 的覆盖会掩盖这个失败");
+        assertEquals("丙", service.translate("other", new Object[0]),
+                "损坏文件之后的文件仍应正常加载");
     }
 
     @Test
