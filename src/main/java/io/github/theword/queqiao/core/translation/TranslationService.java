@@ -36,6 +36,14 @@ import java.util.stream.Stream;
  * <p><b>构造不加载</b>：构造只记录目录与日志实现，不做任何 I/O。是否加载、
  * 何时加载完全由 {@link #reload(boolean)} 决定。
  *
+ * <p><b>两级错误处理（重要）</b>：
+ * <ul>
+ *     <li><b>目录级</b>失败（目录无法枚举、路径存在但不是目录）：保留上一份完整快照，
+ *         <b>不</b>发布新 Map —— 短暂 I/O 故障不应该把已有翻译清空；</li>
+ *     <li><b>单文件级</b>失败（读取失败、解析失败、根节点不是 JSON object）：只跳过该文件，
+ *         其余文件照常合并，扫描结束后统一发布。一个坏文件不会让整个目录加载失败。</li>
+ * </ul>
+ *
  * @since 0.6.0
  */
 public class TranslationService {
@@ -84,6 +92,10 @@ public class TranslationService {
      * <p>启用时所有文件先加载到局部 Map，完成后再整体发布。读取线程只读取 volatile
      * 状态，不会观察到清空和填充之间的中间状态。并发 reload/disable 由实例锁串行化。
      *
+     * <p><b>失败语义分两级</b>：目录无法枚举时保留上一份快照并直接返回
+     * （见 {@link #scanAndLoad(Path)}）；单个文件不可用时只跳过该文件，其余文件照常合并
+     * （见 {@link #loadTranslateFile(Path)}）。只有「成功加载的有效条目为零」才停用。
+     *
      * @param enabled 是否启用翻译；对应配置项 {@code enable_translation}
      */
     public synchronized void reload(boolean enabled) {
@@ -114,6 +126,10 @@ public class TranslationService {
 
     /**
      * 扫描目录并载入翻译数据。
+     *
+     * <p><b>这里是目录级错误的唯一出口</b>：目录无法枚举（或路径存在但不是目录）时抛出
+     * {@link IOException}，由调用方保留上一份完整状态。单文件错误不会冒泡到这里 ——
+     * {@link #loadTranslateFile(Path)} 已经把每个文件各自隔离掉了。
      *
      * @throws IOException 目录存在但无法枚举时抛出；调用方会保留上一份完整状态
      */
@@ -150,7 +166,16 @@ public class TranslationService {
 
     /**
      * 读取并解析单个 JSON 翻译文件。文件格式为 JSON object，值必须为字符串。
-     * 无效文件或条目会被记录并跳过，不阻断其他文件加载。
+     *
+     * <p><b>单文件失败被隔离在本方法内</b>：读取失败、解析失败或根节点不是 JSON object 时，
+     * 只记录文件名与原因并返回<b>空 Map</b>，调用方据此跳过本文件、继续处理其余文件。
+     *
+     * <p>返回空 Map 而不是「已解析的部分结果」是刻意的：文件级异常意味着这份文件整体不可信，
+     * 把半份内容合进快照会让「哪些条目最终生效」变得不可预期。与之相对，<b>单条</b>取值不是
+     * 字符串时只跳过该条目，同一文件里的其它有效条目照常保留。
+     *
+     * @param file 待读取的翻译文件
+     * @return 该文件提供的键值对；文件不可用时为空 Map（非 null）
      */
     private Map<String, String> loadTranslateFile(Path file) {
         Map<String, String> data = new LinkedHashMap<>();
@@ -159,7 +184,7 @@ public class TranslationService {
             JsonElement root = new JsonParser().parse(jsonContent);
             if (root == null || !root.isJsonObject()) {
                 logger.warn("加载翻译文件失败：{}，根节点必须是 JSON object", file.getFileName());
-                return data;
+                return Collections.emptyMap();
             }
 
             JsonObject object = root.getAsJsonObject();
@@ -176,7 +201,10 @@ public class TranslationService {
                 logger.info("加载文件成功: {} ({} 条)", file.getFileName(), data.size());
             }
         } catch (Exception e) {
+            // 单文件失败只影响本文件：丢弃本次可能已解析出的部分结果，返回空 Map，
+            // 让调用方继续合并其余文件。目录级失败不经过这里（见 scanAndLoad）。
             logger.warn("加载翻译文件失败: {}, 原因: {}", file.getFileName(), e.getMessage());
+            return Collections.emptyMap();
         }
         return data;
     }

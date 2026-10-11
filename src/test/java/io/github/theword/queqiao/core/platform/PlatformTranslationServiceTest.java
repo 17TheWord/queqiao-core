@@ -6,6 +6,7 @@ import io.github.theword.queqiao.core.config.io.ConfigStore;
 import io.github.theword.queqiao.core.constant.BaseConstant;
 import io.github.theword.queqiao.core.constant.ServerTypeConstant;
 import io.github.theword.queqiao.core.runtime.QueQiaoRuntime;
+import io.github.theword.queqiao.core.runtime.RuntimeState;
 import io.github.theword.queqiao.core.translation.TranslationService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -160,6 +161,51 @@ class PlatformTranslationServiceTest {
         } finally {
             runtime.shutdown();
         }
+    }
+
+    @Test
+    @DisplayName("Runtime 翻译开关可动态切换：同一个 Runtime 与同一个翻译服务实例走完整个生命周期")
+    void runtimeTogglesTranslationAcrossReloads() throws Exception {
+        StubPlatformContext platform = new StubPlatformContext(ServerTypeConstant.SPIGOT, tempDir);
+        writeConfig(tempDir, true);
+        writeTranslate(tempDir, "zh_cn.json", "{\"hello\": \"你好\"}");
+
+        QueQiaoRuntime runtime = QueQiaoRuntime.start(platform);
+        TranslationService service = platform.getTranslationService();
+        try {
+            // ① 配置启用 → 启动即加载
+            assertEquals(RuntimeState.RUNNING, runtime.getState(), "前置条件：Runtime 应已启动");
+            assertTrue(service.isEnabled(), "启用配置下应加载翻译");
+            assertEquals("你好", service.translate("hello", new Object[0]));
+
+            // ② 配置改为 false 后 reload → 服务禁用，translate 回到 key
+            writeConfig(tempDir, false);
+            runtime.reload();
+            assertSame(service, platform.getTranslationService(), "reload 不应更换翻译服务实例");
+            assertFalse(service.isEnabled(), "配置关闭后应禁用翻译");
+            assertEquals("hello", service.translate("hello", new Object[0]));
+
+            // ③ 改动 JSON 但不 reload → 暂不生效
+            writeTranslate(tempDir, "zh_cn.json", "{\"hello\": \"哈喽\"}");
+            assertFalse(service.isEnabled(), "未 reload 时不应自行加载");
+            assertEquals("hello", service.translate("hello", new Object[0]));
+
+            // ④ 配置改回 true 再 reload → 重新读取 JSON，返回新译文
+            writeConfig(tempDir, true);
+            runtime.reload();
+            assertSame(service, platform.getTranslationService(), "再次 reload 仍应是同一实例");
+            assertTrue(service.isEnabled(), "重新启用后应再次加载");
+            assertEquals("哈喽", service.translate("hello", new Object[0]), "应读到改动后的 JSON 内容");
+
+            // 配置切换全程复用同一个 Runtime，不需要重建
+            assertEquals(RuntimeState.RUNNING, runtime.getState(), "切换配置期间 Runtime 应保持 RUNNING");
+        } finally {
+            runtime.shutdown();
+        }
+
+        assertSame(service, platform.getTranslationService(), "shutdown 也不应更换实例");
+        assertFalse(service.isEnabled(), "shutdown 后不存在活动翻译状态");
+        assertEquals(RuntimeState.STOPPED, runtime.getState(), "shutdown 后 Runtime 应为 STOPPED");
     }
 
     // ------------------------------------------------------------------

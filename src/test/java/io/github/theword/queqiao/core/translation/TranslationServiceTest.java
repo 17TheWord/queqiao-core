@@ -138,6 +138,39 @@ class TranslationServiceTest {
     }
 
     @Test
+    @DisplayName("损坏文件被隔离：不影响其它文件，也不贡献任何条目")
+    void brokenFileDoesNotAffectOtherFiles() throws IOException {
+        writeJson(tempDir, "a.json", "{\"from_a\": \"甲\"}");
+        // 未闭合的 JSON（Gson 2.8.0 会抛 JsonSyntaxException）。里面刻意先写一个
+        // 合法样式的条目，用来验证"失败文件不会泄漏已解析出的半份结果"。
+        writeJson(tempDir, "b.json", "{\"b_only\": \"乙\", ");
+        writeJson(tempDir, "c.json", "{\"from_c\": \"丙\"}");
+        TranslationService service = serviceOver(tempDir);
+
+        service.reload(true);
+
+        assertTrue(service.isEnabled(), "存在有效文件时应启用");
+        assertEquals("甲", service.translate("from_a", new Object[0]));
+        assertEquals("丙", service.translate("from_c", new Object[0]), "损坏文件之后的文件仍应被加载");
+        assertEquals("b_only", service.translate("b_only", new Object[0]),
+                "损坏文件不应贡献任何条目，连已解析出的半份也不行");
+    }
+
+    @Test
+    @DisplayName("损坏文件不参与重复键覆盖：最终值来自后加载的有效文件")
+    void brokenFileDoesNotParticipateInOverride() throws IOException {
+        writeJson(tempDir, "a.json", "{\"shared\": \"甲\"}");
+        writeJson(tempDir, "b.json", "{\"shared\": \"乙\", ");
+        writeJson(tempDir, "c.json", "{\"shared\": \"丙\"}");
+        TranslationService service = serviceOver(tempDir);
+
+        service.reload(true);
+
+        assertEquals("丙", service.translate("shared", new Object[0]),
+                "b.json 已损坏，既不能生效也不能覆盖，最终应是 c.json 的值");
+    }
+
+    @Test
     @DisplayName("再次 reload 能拾取新增的翻译文件（重载生效）")
     void reloadPicksUpNewFiles() throws IOException {
         writeJson(tempDir, "zh_cn.json", "{\"a\": \"甲\"}");
