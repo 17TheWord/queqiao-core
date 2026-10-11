@@ -152,12 +152,21 @@ class QueQiaoRuntimeLifecycleTest {
     }
 
     @Test
-    @DisplayName("未启动时 translate 返回原 key，翻译为关闭状态")
-    void translateBeforeStartReturnsKey() {
-        QueQiaoRuntime created = newRuntime();
-
-        assertEquals("death.attack.player", created.translate("death.attack.player", new String[] {"Steve"}));
-        assertFalse(created.isTranslationEnabled(), "未启动时翻译应为关闭状态");
+    @DisplayName("start 按配置调度平台翻译服务；shutdown 后不留活动翻译状态")
+    void startSchedulesPlatformTranslationService() throws Exception {
+        try (DisabledConfigFixture ignored = new DisabledConfigFixture()) {
+            AbstractPlatformContext<?, ?, ?> platform = PlatformStubs.noopPlatformContext();
+            QueQiaoRuntime created = QueQiaoRuntime.create(null, platform, null);
+            try {
+                created.start();
+                assertFalse(platform.getTranslationService().isEnabled(),
+                        "配置中禁用翻译时，平台翻译服务应保持关闭");
+            } finally {
+                created.shutdown();
+            }
+            assertFalse(platform.getTranslationService().isEnabled(),
+                    "关闭后翻译服务不应处于活动状态");
+        }
     }
 
     // ------------------------------------------------------------------

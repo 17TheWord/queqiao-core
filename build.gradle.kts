@@ -70,7 +70,11 @@ tasks.withType<Javadoc> {
         encoding = "UTF-8"
         charSet = "UTF-8"
         docEncoding = "UTF-8"
-        links("https://docs.oracle.com/javase/8/docs/api/")
+        // 不再声明外部 JDK 文档链接：Oracle 已下线 Java 8 的 API 文档
+        // （/javase/8/docs/api/ 与 /en/java/javase/8/docs/api/ 现在都会 302 走），
+        // 而 javadoc 把 -link 的重定向当成致命错误，会让 :javadoc / publish 直接失败。
+        // 本项目面向 Java 8，指向更新 JDK 的文档又会让 @link 落到语义不匹配的目标上，
+        // 因此宁可不做外部交叉链接 —— 顺带让文档构建不依赖外网。
         if (JavaVersion.current().isJava9Compatible) {
             addBooleanOption("html5", true)
         }

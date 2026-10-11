@@ -1,8 +1,5 @@
-package io.github.theword.queqiao.core.localize;
+package io.github.theword.queqiao.core.translation;
 
-import io.github.theword.queqiao.core.config.Config;
-import io.github.theword.queqiao.core.config.ConfigKeys;
-import io.github.theword.queqiao.core.constant.BaseConstant;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -13,7 +10,6 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -27,27 +23,33 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
 /**
- * 语言翻译服务类。
- * <p>
- * 该服务负责从本地文件系统加载 JSON 格式的翻译库，并为事件消息提供多语言转换支持。
+ * 翻译服务类。
+ *
+ * <p>该服务负责从指定目录加载 JSON 格式的翻译库，并为事件消息提供多语言转换支持。
  * 翻译数据通过不可变快照发布，因此翻译调用不需要获取锁。
+ *
+ * <p><b>归属</b>：本服务属于<b>平台</b>，不属于 Runtime。目录由平台决定
+ * （见 {@code AbstractPlatformContext#getDataDirectory()}），Runtime 只按配置
+ * 调度它的生命周期（{@link #reload(boolean)} / {@link #disable()}）。
+ * 因此本类不再持有 {@code Config}，也不再自行推导配置目录。
+ *
+ * <p><b>构造不加载</b>：构造只记录目录与日志实现，不做任何 I/O。是否加载、
+ * 何时加载完全由 {@link #reload(boolean)} 决定。
  *
  * @since 0.6.0
  */
-public class LanguageService {
+public class TranslationService {
 
     private final Set<String> missingKeys = ConcurrentHashMap.newKeySet();
-    private final boolean isModServer;
+
     private final Logger logger;
 
     /**
-     * 配置运行时状态
+     * 翻译文件所在目录
      *
-     * <p><b>只持有 Config 引用，不复制配置值</b>：{@code Config.load()} 原地更新同一实例，
-     * 因此 {@link #reload()} 每次都能读到当前配置。若在构造阶段把
-     * {@code enable_translation} 复制成布尔字段，reload 后就会读到过期值。
+     * <p>构造后不再变化；{@link #reload(boolean)} 每次都以它为准重新扫描。
      */
-    private final Config config;
+    private final Path directory;
 
     /**
      * 启用状态和翻译映射一起发布，避免读线程看到彼此不匹配的状态。
@@ -55,49 +57,48 @@ public class LanguageService {
     private volatile TranslationState state = TranslationState.disabled();
 
     /**
-     * 构造并初始化翻译服务。
+     * 构造翻译服务（<b>不加载任何文件</b>）。
      *
-     * @param isModServer 是否为模组服务端环境
-     * @param logger      外部传入的日志记录器，不得为 null
-     * @param config      配置运行时状态（与 Runtime 共用同一实例），不得为 null
+     * @param directory 翻译文件目录，不得为 null；目录不存在时视为"没有翻译内容"
+     * @param logger    日志实现，不得为 null
      */
-    public LanguageService(boolean isModServer, Logger logger, Config config) {
-        this.isModServer = isModServer;
+    public TranslationService(Path directory, Logger logger) {
+        this.directory = Objects.requireNonNull(directory, "directory");
         this.logger = Objects.requireNonNull(logger, "logger");
-        this.config = Objects.requireNonNull(config, "config");
-        reload();
     }
 
     /**
-     * 获取翻译服务当前的内部启用状态。
+     * 获取翻译服务当前的启用状态。
      *
      * @return true 表示服务已准备就绪且存在载入的翻译条目。
      */
-    public boolean isInternalEnable() {
+    public boolean isEnabled() {
         return state.enabled;
     }
 
     /**
-     * 重新读取当前翻译目录并发布新状态。
+     * 按给定开关重新加载翻译目录并发布新状态。
      *
-     * <p>所有文件先加载到局部 Map，完成后再整体发布。读取线程只读取 volatile 状态，
-     * 不会观察到清空和填充之间的中间状态。并发 reload/disable 由实例锁串行化。
+     * <p>{@code enabled == false} 等价于停用：直接发布空状态，<b>不</b>触碰磁盘。
+     *
+     * <p>启用时所有文件先加载到局部 Map，完成后再整体发布。读取线程只读取 volatile
+     * 状态，不会观察到清空和填充之间的中间状态。并发 reload/disable 由实例锁串行化。
+     *
+     * @param enabled 是否启用翻译；对应配置项 {@code enable_translation}
      */
-    public synchronized void reload() {
-        if (!config.get(ConfigKeys.ENABLE_TRANSLATION)) {
+    public synchronized void reload(boolean enabled) {
+        if (!enabled) {
             publish(TranslationState.disabled());
             logger.info("翻译功能已在配置中禁用。");
             return;
         }
 
-        Path translationDirectory = Paths.get(
-                "./" + (isModServer ? "config" : "plugins"), BaseConstant.MODULE_NAME, "translate");
         final Map<String, String> translations;
         try {
-            translations = scanAndLoad(translationDirectory);
+            translations = scanAndLoad(directory);
         } catch (IOException e) {
             // 本轮无法可靠读取目录时保留上一份完整状态，避免短暂 I/O 故障清空翻译。
-            logger.warn("读取翻译目录失败，保留当前翻译状态：{}，原因：{}", translationDirectory, e.getMessage());
+            logger.warn("读取翻译目录失败，保留当前翻译状态：{}，原因：{}", directory, e.getMessage());
             return;
         }
 

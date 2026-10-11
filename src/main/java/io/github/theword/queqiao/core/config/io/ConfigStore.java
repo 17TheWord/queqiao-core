@@ -1,6 +1,5 @@
 package io.github.theword.queqiao.core.config.io;
 
-import io.github.theword.queqiao.core.constant.BaseConstant;
 import org.slf4j.Logger;
 
 import java.io.IOException;
@@ -10,7 +9,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 
@@ -46,16 +44,17 @@ public final class ConfigStore {
     /**
      * 解析配置文件路径
      *
-     * <p>插件端为 {@code plugins/QueQiao/config.yml}，模组端为 {@code config/QueQiao/config.yml}
-     * （相对工作目录）。<b>统一使用 {@code BaseConstant.MODULE_NAME}</b>，
-     * 避免出现 {@code QueQiao} 与 {@code queqiao} 两套目录（Linux 下会真的分成两个）。
+     * <p>配置文件恒为平台数据目录下的 {@code config.yml}。目录<b>不再由布尔量推导</b>：
+     * 插件端 {@code plugins/QueQiao} 与模组端 {@code config/QueQiao} 的差异已经收敛在
+     * {@code AbstractPlatformContext#getDataDirectory()}，这里只负责拼上文件名。
+     * 这样"目录从哪来"只有一个来源，不会出现两处各自推导而漂移。
      *
-     * @param isModServer 是否为模组服务端
+     * @param dataDirectory 平台数据目录，通常取自
+     *                      {@code AbstractPlatformContext#getDataDirectory()}
      * @return 配置文件路径
      */
-    public static Path resolveConfigPath(boolean isModServer) {
-        String configFolder = isModServer ? "config" : "plugins";
-        return Paths.get(configFolder).resolve(BaseConstant.MODULE_NAME).resolve("config.yml");
+    public static Path resolveConfigPath(Path dataDirectory) {
+        return dataDirectory.resolve("config.yml");
     }
 
     /**

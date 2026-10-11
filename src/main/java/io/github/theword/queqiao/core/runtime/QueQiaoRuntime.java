@@ -22,7 +22,6 @@ import io.github.theword.queqiao.core.exception.rcon.RconException;
 import io.github.theword.queqiao.core.extension.QueQiaoExtension;
 import io.github.theword.queqiao.core.extension.QueQiaoExtensionDiscovery;
 import io.github.theword.queqiao.core.handle.HandleProtocolMessage;
-import io.github.theword.queqiao.core.localize.LanguageService;
 import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
 import io.github.theword.queqiao.core.protocol.handler.status.ServerStatusCollector;
 import io.github.theword.queqiao.core.rcon.RconClient;
@@ -155,8 +154,6 @@ public final class QueQiaoRuntime {
     private volatile RconClient rconClient;
 
     private volatile JsonElement messagePrefixJsonElement;
-
-    private volatile LanguageService languageService;
 
     private QueQiaoRuntime(
             Logger logger,
@@ -452,7 +449,7 @@ public final class QueQiaoRuntime {
      * </ul>
      */
     private void loadConfig() {
-        Path configPath = ConfigStore.resolveConfigPath(platformContext.isModServer());
+        Path configPath = ConfigStore.resolveConfigPath(platformContext.getDataDirectory());
         ConfigFileReader.Result result = ConfigFileReader.read(configPath);
         ConfigLoader loader = new ConfigLoader(configRegistry, config);
 
@@ -573,7 +570,9 @@ public final class QueQiaoRuntime {
         logger.info(BaseConstant.INITIALIZED);
 
         messagePrefixJsonElement = initMessagePrefixJsonObject(config.get(ConfigKeys.MESSAGE_PREFIX));
-        languageService = new LanguageService(platformContext.isModServer(), logger, config);
+        // 翻译服务归属平台：Runtime 只按配置调度它的生命周期，不持有、也不自行创建。
+        platformContext.getTranslationService()
+                .reload(config.get(ConfigKeys.ENABLE_TRANSLATION));
         serverStatusCollector.initPingTarget();
         serverStatusCollector.startRefreshScheduler(
                 config.get(ConfigKeys.Status.REFRESH_INTERVAL_SECONDS));
@@ -604,10 +603,8 @@ public final class QueQiaoRuntime {
 
             loadConfig();
             messagePrefixJsonElement = initMessagePrefixJsonObject(config.get(ConfigKeys.MESSAGE_PREFIX));
-            LanguageService service = languageService;
-            if (service != null) {
-                service.reload();
-            }
+            platformContext.getTranslationService()
+                    .reload(config.get(ConfigKeys.ENABLE_TRANSLATION));
             serverStatusCollector.initPingTarget();
             serverStatusCollector.updateRefreshInterval(config.get(ConfigKeys.Status.REFRESH_INTERVAL_SECONDS));
             List<String> messages = new ArrayList<>();
@@ -659,7 +656,7 @@ public final class QueQiaoRuntime {
     /**
      * 清理全部 Runtime-owned 资源
      *
-     * <p>关闭顺序保持既有约定：状态采集器 → WebSocket → RCON → 语言服务；
+     * <p>关闭顺序保持既有约定：状态采集器 → WebSocket → RCON → 翻译服务；
      * 每一项自身都幂等，因此本方法可被"启动失败回滚"与"正常关闭"复用，
      * 而不会把生命周期状态变化与资源清理实现耦合在一起。
      */
@@ -680,10 +677,9 @@ public final class QueQiaoRuntime {
             }
         }
 
-        LanguageService service = languageService;
-        if (service != null) {
-            service.disable();
-        }
+        // 翻译服务由平台持有，这里只负责按生命周期停用。disable() 幂等，
+        // 且 TranslationService 构造不读磁盘，因此"从未加载过"时调用也无副作用。
+        platformContext.getTranslationService().disable();
     }
 
     /**
@@ -809,19 +805,6 @@ public final class QueQiaoRuntime {
         return obj;
     }
 
-    public boolean isTranslationEnabled() {
-        LanguageService service = languageService;
-        return service != null && service.isInternalEnable();
-    }
-
-    public String translate(String key, String[] args) {
-        LanguageService service = languageService;
-        if (service == null) {
-            return key;
-        }
-        return service.translate(key, args);
-    }
-
     /**
      * @return 配置运行时状态（<b>唯一</b>配置状态来源）
      */
@@ -850,7 +833,7 @@ public final class QueQiaoRuntime {
      *
      * <p>只影响之后才通过 {@link #getLogger()} 读取的路径。
      * 已经构造的协作者（{@link HandleProtocolMessage}、{@link RuntimeUtils}、
-     * {@link ServerStatusCollector}、{@link LanguageService} 等）在构造时即捕获 logger，
+     * {@link ServerStatusCollector} 等）在构造时即捕获 logger，
      * 不会被本次替换影响。
      *
      * @param logger 新的日志实现

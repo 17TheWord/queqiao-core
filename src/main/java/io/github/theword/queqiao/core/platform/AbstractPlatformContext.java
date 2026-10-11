@@ -1,12 +1,19 @@
 package io.github.theword.queqiao.core.platform;
 
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Collection;
 import java.util.UUID;
 
 import com.google.gson.JsonElement;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import io.github.theword.queqiao.core.constant.BaseConstant;
 import io.github.theword.queqiao.core.constant.ServerTypeConstant;
 import io.github.theword.queqiao.core.event.model.PlayerModel;
+import io.github.theword.queqiao.core.event.model.TranslateModel;
+import io.github.theword.queqiao.core.translation.TranslationService;
 
 /**
  * 平台上下文：core 与具体服务端之间的<b>唯一</b>接入点
@@ -15,7 +22,7 @@ import io.github.theword.queqiao.core.event.model.PlayerModel;
  * 因此 core 不依赖任何具体服务端的类型。
  *
  * <p><b>职责边界（重要）</b>：本类只描述"平台本身能做什么"——
- * 平台元数据、玩家查询、组件转换、广播、私聊、Title、ActionBar。
+ * 平台元数据、玩家查询、组件转换、广播、私聊、Title、ActionBar、数据目录与翻译服务。
  * <b>不负责</b>命令来源相关能力：回执（{@code reply}）与权限判定已归属
  * {@code CommandExecutionContext}，命令来源的类型转换也不在本类。
  * 两者职责完全分离：
@@ -70,11 +77,30 @@ public abstract class AbstractPlatformContext<S, C, P> {
     private static final String MESSAGE_ACTIONBAR_UNSUPPORTED = "当前平台未实现 ActionBar 功能";
 
     /**
+     * 基类自身的日志实现
+     *
+     * <p>只用于基类<b>自己创建</b>的组件（当前为 {@link #getTranslationService()} 的
+     * {@link TranslationService}）。Core 的统一日志体系以
+     * {@link BaseConstant#MODULE_NAME} 为 logger 名，此处保持一致，
+     * 不引入平台侧的 logger 注入。
+     */
+    private static final Logger LOGGER = LoggerFactory.getLogger(BaseConstant.MODULE_NAME);
+
+    /**
      * 服务端实例
      *
      * <p>平台需自行保证该实例在 {@link #getPlayers()} 等原语被调用前可用。
      */
     public final S server;
+
+    /**
+     * 平台翻译服务（首次 {@link #getTranslationService()} 时创建）
+     *
+     * <p>volatile + 双重检查：保证多线程下只创建一个实例，且读路径无锁。
+     * 创建时机刻意推迟到第一次获取，因此<b>父类构造期间不会</b>调用可覆盖的
+     * {@link #getDataDirectory()}。
+     */
+    private volatile TranslationService translationService;
 
     public AbstractPlatformContext(S server) {
         this.server = server;
@@ -104,13 +130,32 @@ public abstract class AbstractPlatformContext<S, C, P> {
     /**
      * 是否为模组服务端
      *
-     * <p>默认按 {@link #getServerType()} 推导。若某平台不符合"模组 = config 目录"这一规律，
-     * 覆盖本方法即可。
-     *
      * @return 是否为模组服务端
+     * @deprecated 数据目录应由 {@link #getDataDirectory()} 直接给出。
+     *             "模组 = config 目录"只是常见规律，用它推导路径会把平台的目录差异
+     *             编码进调用方；新代码请直接使用 {@link #getDataDirectory()}。
      */
+    @Deprecated
     public boolean isModServer() {
         return ServerTypeConstant.isModType(getServerType());
+    }
+
+    /**
+     * 平台数据目录（{@code config.yml} 与 {@code translate/} 的父目录）
+     *
+     * <p>默认按 {@link ServerTypeConstant#isModType(String)} 推导：模组端
+     * {@code config/QueQiao}，插件端 {@code plugins/QueQiao}（均相对工作目录）。
+     * 这与历史目录布局<b>完全一致</b>，因此既有平台不需要重写本方法。
+     *
+     * <p>不符合该规律的平台（例如配置走 {@code config/} 的插件平台）直接覆盖本方法，
+     * 无需改动 Core —— Core 只认这一个入口，不再用布尔量二次推导。
+     *
+     * @return 数据目录，相对工作目录
+     */
+    public Path getDataDirectory() {
+        return ServerTypeConstant.isModType(getServerType())
+                ? Paths.get("config", BaseConstant.MODULE_NAME)
+                : Paths.get("plugins", BaseConstant.MODULE_NAME);
     }
 
     // ------------------------------------------------------------------
@@ -203,6 +248,61 @@ public abstract class AbstractPlatformContext<S, C, P> {
     public PlatformResult<Void> sendActionBarComponent(C component) {
         return PlatformResult.failure(
                 PlatformResultCode.UNSUPPORTED, MESSAGE_ACTIONBAR_UNSUPPORTED);
+    }
+
+    // ------------------------------------------------------------------
+    // 翻译能力
+    //
+    // 翻译的归属是"平台"：目录在哪、是否具备原生组件解析能力，都由平台决定。
+    // Runtime 只按配置调度 TranslationService 的生命周期，不持有它。
+    // ------------------------------------------------------------------
+
+    /**
+     * 获取本平台的标准翻译服务
+     *
+     * <p><b>基类负责创建，平台无需自己 new</b>：同一个上下文实例始终返回<b>同一个</b>
+     * {@link TranslationService}，目录取自 {@link #getDataDirectory()} 下的 {@code translate}。
+     *
+     * <p>首次调用时才创建（线程安全的懒初始化），因此<b>构造期间不会</b>调用可覆盖的
+     * {@link #getDataDirectory()}，子类字段也不会被"父类构造先于子类字段初始化"坑到。
+     *
+     * <p>创建只记录目录与日志实现，<b>不读磁盘</b>；是否加载、何时加载由
+     * {@link TranslationService#reload(boolean)} 决定。
+     *
+     * @return 平台翻译服务，永不为 null
+     */
+    public final TranslationService getTranslationService() {
+        TranslationService service = translationService;
+        if (service == null) {
+            synchronized (this) {
+                service = translationService;
+                if (service == null) {
+                    service = new TranslationService(
+                            getDataDirectory().resolve("translate"), LOGGER);
+                    translationService = service;
+                }
+            }
+        }
+        return service;
+    }
+
+    /**
+     * 把平台原生消息组件解析为 Core 的 {@link TranslateModel}（可选能力）
+     *
+     * <p>默认返回 {@code null}，表示<b>平台没有提供原生组件结构化解析</b>——
+     * 这完全合法，Core 与 Runtime 都不会因此失败。
+     *
+     * <p>具备"翻译键 + 参数"结构的平台（Minecraft 系）覆盖本方法，把组件递归拆成
+     * {@link TranslateModel}；译文取 {@link #getTranslationService()}。
+     *
+     * <p><b>不要</b>用 {@code String.valueOf(component)} 之类的平台默认渲染冒充解析结果：
+     * 那等于把已经本地化的文本塞进翻译模型，下游会再翻译一次。
+     *
+     * @param component 平台组件
+     * @return 解析结果；平台未实现原生解析时返回 null
+     */
+    public TranslateModel parseTranslateModel(C component) {
+        return null;
     }
 
     // ------------------------------------------------------------------

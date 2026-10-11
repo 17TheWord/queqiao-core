@@ -169,7 +169,8 @@ class QueQiaoRuntimeStartupRollbackTest {
      */
     private static final class ConfigFixture implements AutoCloseable {
 
-        private static final Path CONFIG_PATH = ConfigStore.resolveConfigPath(false);
+        private static final Path CONFIG_PATH = ConfigStore.resolveConfigPath(
+                PlatformStubs.noopPlatformContext().getDataDirectory());
         private static final Path BACKUP_PATH = CONFIG_PATH.resolveSibling(CONFIG_PATH.getFileName() + ".bak");
 
         /**
