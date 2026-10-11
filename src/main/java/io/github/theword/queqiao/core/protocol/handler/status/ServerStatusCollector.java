@@ -35,9 +35,9 @@ import java.util.function.Supplier;
  * 刷新线程池与任务、指标采集器、日志实现）都是实例字段，同一 JVM 中并存的多个
  * Runtime 各自持有独立实例，互不干扰。
  *
- * <p>{@code regex.yml} 与 {@code server.properties} 的定位沿用本类自己的候选路径
- * （{@code config/QueQiao/}、{@code QueQiao/}），与
- * {@code AbstractPlatformContext#getDataDirectory()} 无关。
+ * <p>{@code regex.yml} 的候选位置是 {@code config/QueQiao/} 与 {@code QueQiao/}（相对工作目录），
+ * 不经过 {@code AbstractPlatformContext#getDataDirectory()}。{@code server.properties} 则由
+ * {@code regex.yml} 的 {@code log_path} 推导出的服务端根目录定位，推导不出时回落到工作目录。
  */
 public final class ServerStatusCollector {
     private static final int DEFAULT_SERVER_PORT = 25565;

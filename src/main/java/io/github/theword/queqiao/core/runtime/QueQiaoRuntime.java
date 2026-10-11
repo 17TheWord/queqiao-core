@@ -581,7 +581,8 @@ public final class QueQiaoRuntime {
     }
 
     /**
-     * 清理全部 Runtime 持有的资源，顺序为状态采集器 → WebSocket → RCON → 翻译服务。
+     * 清理 Runtime 管理生命周期的资源，并停用平台翻译服务；
+     * 顺序为状态采集器 → WebSocket → RCON → 翻译服务。
      *
      * <p>每一项自身幂等，因此本方法可被"启动失败回滚"与"正常关闭"共用。
      */

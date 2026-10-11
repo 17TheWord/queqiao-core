@@ -24,7 +24,7 @@ public class TranslateModel {
      * 最终显示文本。
      *
      * <p>翻译成功时为格式化后的译文；翻译未命中或翻译关闭时，为平台提供的原始显示文本。
-     * 无论哪种情况，{@link #key} 与 {@link #args} 都保留结构化信息。
+     * 平台能解析出结构时同时保留 {@link #key} 与 {@link #args}；纯文本模型允许二者为空。
      */
     private String text;
 

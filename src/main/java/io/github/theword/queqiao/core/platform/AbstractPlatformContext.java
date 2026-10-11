@@ -23,9 +23,10 @@ import io.github.theword.queqiao.core.translation.TranslationService;
  * 组件转换、广播、私聊、Title、ActionBar、数据目录、翻译服务）；命令来源相关能力
  * （回执与权限判定）属于 {@code CommandExecutionContext}。
  *
- * <p>公开方法统一返回 {@link PlatformResult}，不依赖任何协议类型 —— 把它翻译成协议状态
- * 是 {@code Api} 层的职责。core 侧调用的公开方法签名中不出现 {@code S / C / P}，
- * 因此持有 {@code AbstractPlatformContext<?, ?, ?>} 时仍可直接调用。
+ * <p>Core 面向协议调用的平台操作通过 {@link PlatformResult} 表达执行结果，不依赖任何协议类型 ——
+ * 把它翻译成协议状态是 {@code Api} 层的职责。平台原生类型（{@code S / C / P}）只出现在
+ * 平台适配原语上；Core 侧调用的方法签名中不出现它们，因此持有
+ * {@code AbstractPlatformContext<?, ?, ?>} 时仍可直接调用。
  *
  * <p>构造时即持有服务端实例；{@link #getServerType()}、{@link #getServerVersion()} 与
  * {@link #getDataDirectory()} 必须不晚于 Runtime {@code start()} 可用 ——
