@@ -10,20 +10,20 @@ import org.slf4j.Logger;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Supplier;
 
 public class ReconnectCommand<NCS> extends CommandNode<NCS> {
 
     /**
-     * WebSocket 管理器（Runtime 启动后注入）
+     * WebSocket 管理器供应商（命令执行时才取值，因此命令树可在 Runtime 启动前构建）
      */
-    private final WebsocketManager websocketManager;
+    private final Supplier<WebsocketManager> websocketSupplier;
 
     public ReconnectCommand(
             Logger logger,
-            WebsocketManager websocketManager) {
+            Supplier<WebsocketManager> websocketSupplier) {
         super(logger);
-        this.websocketManager = Objects.requireNonNull(
-                websocketManager, "websocketManager 不能为 null：命令树须在 Runtime.start() 之后构建");
+        this.websocketSupplier = Objects.requireNonNull(websocketSupplier, "websocketSupplier");
         addChild(new ReconnectAllCommand<>(logger, context -> reconnect(context, true)));
     }
 
@@ -90,6 +90,12 @@ public class ReconnectCommand<NCS> extends CommandNode<NCS> {
      * @param all             是否强制重连全部客户端
      */
     public void reconnect(CommandExecutionContext<NCS> context, boolean all) {
+        WebsocketManager websocketManager = websocketSupplier.get();
+        if (websocketManager == null) {
+            context.reply(CommandConstant.RUNTIME_NOT_READY);
+            return;
+        }
+
         context.reply(all ? CommandConstant.RECONNECT_ALL_CLIENT : CommandConstant.RECONNECT_NOT_OPEN_CLIENT);
 
         List<WsClient> wsClientList = websocketManager.getWsClientList();

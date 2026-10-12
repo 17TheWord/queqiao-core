@@ -123,21 +123,55 @@ class CommandArchitectureBoundaryTest {
                 "平台上下文不属于 Command 子系统");
     }
 
+    /**
+     * NCS 允许出现的唯一例外文件（相对 {@code src/main/java}）
+     *
+     * <p>{@code QueQiaoRuntime.createCommandRouter()} 是<b>方法级</b>泛型工厂：
+     * 它把 Runtime 已持有的协作者（Logger / Config / WebsocketManager / reload）
+     * 转发给 {@code CommandRouter}，让平台不必手工组装。
+     * Runtime 自身<b>不</b>被 NCS 参数化 —— 该不变量由
+     * {@link #runtimeIsNotParameterizedByNcs()} 单独断言。
+     */
+    private static final String NCS_FACTORY_EXCEPTION = "runtime/QueQiaoRuntime.java";
+
+    /**
+     * 形如 {@code private final CommandRouter<NCS> xxx;} 的字段声明
+     */
+    private static final java.util.regex.Pattern NCS_FIELD =
+            java.util.regex.Pattern.compile(
+                    "(?m)^\\s*(?:private|protected|public)\\s+(?:static\\s+)?(?:final\\s+)?[\\w.]*<NCS>\\s+\\w+\\s*[;=]");
+
     @Test
     @DisplayName("NCS 只出现在 Command 包内（泛型红线）")
     void ncsIsConfinedToCommandPackage() throws IOException {
         Path root = projectRoot();
-        String commandDir = root.resolve(COMMAND_PACKAGE_DIR).toString().replace('\\', '/');
 
         for (Path file : javaFilesUnder("src/main/java")) {
-            if (file.toString().replace('\\', '/').startsWith(commandDir)) {
+            String relative = root.relativize(file).toString().replace('\\', '/');
+            // COMMAND_PACKAGE_DIR 是相对路径，因此这里必须用 relative 比较
+            if (relative.startsWith(COMMAND_PACKAGE_DIR)
+                    || relative.endsWith(NCS_FACTORY_EXCEPTION)) {
                 continue;
             }
-            String body = stripComments(read(root.relativize(file).toString().replace('\\', '/')));
+            String body = stripComments(read(relative));
             assertTrue(
                     !body.contains("<NCS>") && !body.contains("<NCS,"),
                     file + " 位于 Command 包之外，不得出现 NCS 泛型参数");
         }
+    }
+
+    @Test
+    @DisplayName("QueQiaoRuntime 不被 NCS 参数化，也不持有 NCS 字段（工厂例外的补偿断言）")
+    void runtimeIsNotParameterizedByNcs() throws IOException {
+        String body = stripComments(
+                read("src/main/java/io/github/theword/queqiao/core/" + NCS_FACTORY_EXCEPTION));
+
+        assertTrue(
+                !body.contains("class QueQiaoRuntime<"),
+                "QueQiaoRuntime 不得被 NCS 参数化 —— 泛型只允许出现在 createCommandRouter 的方法签名里");
+        assertTrue(
+                !NCS_FIELD.matcher(body).find(),
+                "QueQiaoRuntime 不得持有 NCS 类型的字段");
     }
 
     /**

@@ -47,6 +47,11 @@ public class CommandRouter<NCS> {
     /**
      * 构造命令路由
      *
+     * <p>依赖在本构造器内被包装成供应商交给命令节点 —— 节点只在执行时取值，
+     * 因此这里的 {@code config} / {@code websocketManager} 必须已经就绪（本路径要求
+     * Runtime 已 {@code start()}）。需要"Runtime 启动前建树"请改用
+     * {@code QueQiaoRuntime#createDeferredCommandTree}。
+     *
      * @param logger           日志实现，不得为 null
      * @param config           配置运行时状态，不得为 null
      * @param websocketManager WebSocket 管理器（须在 Runtime.start() 之后获取），不得为 null
@@ -57,7 +62,11 @@ public class CommandRouter<NCS> {
             Config config,
             WebsocketManager websocketManager,
             Supplier<ReloadResult> reloadAction) {
-        this.rootCommand = new RootCommand<>(logger, config, websocketManager, reloadAction);
+        Objects.requireNonNull(config, "config");
+        Objects.requireNonNull(
+                websocketManager, "websocketManager 不能为 null：本构造器要求 Runtime 已启动");
+        this.rootCommand = new RootCommand<>(
+                logger, () -> config, () -> websocketManager, reloadAction);
     }
 
     /**

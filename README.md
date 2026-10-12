@@ -82,6 +82,47 @@ public final class XxxCommandExecutionContext
 `nativeSource` 是 `public final` 字段，在整次 invocation 内保持不变且不可为 null；
 它既是平台适配层的工作对象，也是第三方命令访问平台特有能力时的入口。
 
+## Extension SPI
+
+从 `0.7.0-beta.3` 起，外部附属模块（Addon）可以挂载到**已经存在的** QueQiao Runtime，
+并向现有协议系统注册新的 API —— 不需要、也不应该创建第二个 Runtime 或第二套 WebSocket。
+
+扩展只做一件事：贡献 API。
+
+```java
+public final class ExampleExtension implements QueQiaoExtension {
+
+    @Override
+    public void register(QueQiaoExtensionContext context) {
+        context.registerApi(new ExamplePingApi(/* ... */));
+    }
+}
+```
+
+平台宿主负责发现扩展实例，再交给 Runtime 装配：
+
+```java
+QueQiaoRuntime runtime = QueQiaoRuntime.create(
+        configurer,
+        platformContext,
+        apiConfigurer,
+        discoveredExtensions   // Collection<? extends QueQiaoExtension>
+);
+```
+
+要点：
+
+- 扩展注册的 API 与内置 API 进入**同一份** API 集合，因此自动复用现有的
+  `ProtocolRouter`、`Response`、`echo` 与 WebSocket 传输。
+- 注册只发生在启动装配阶段。装配结束后 `QueQiaoExtensionContext` 会被 seal，
+  再调用 `registerApi` 抛 `IllegalStateException`。
+- 当前仅支持启动装配阶段注册，**不支持**运行期动态注册与卸载。
+- 扩展拿不到 `WebsocketManager` / `ProtocolRouter` / 平台上下文——它只能贡献 API，
+  不能读取或改写其它 API。
+- 不传扩展时使用原来的三参 `create(...)` 即可，行为不变。
+
+> 独立示例项目将在后续提供。
+
 ## 接口说明
 
 - `V2` 完整协议：[`ApiFox`](https://queqiao.apifox.cn/)：适用于 鹊桥 `0.3.0` 及以上版本

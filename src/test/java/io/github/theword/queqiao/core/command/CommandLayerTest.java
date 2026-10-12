@@ -126,7 +126,7 @@ class CommandLayerTest {
                         "服务端应登记 2 个连接");
 
                 FakeCommandExecutionContext<Object> source = new FakeCommandExecutionContext<>(NATIVE_SOURCE);
-                new InfoCommand<>(LOGGER, runtime.getConfig(), runtime.getWebsocketManager())
+                new InfoCommand<>(LOGGER, () -> runtime.getConfig(), () -> runtime.getWebsocketManager())
                         .execute(source, Collections.emptyList());
                 List<String> messages = source.getReplies();
 
@@ -155,7 +155,7 @@ class CommandLayerTest {
             startRuntime();
 
             FakeCommandExecutionContext<Object> source = new FakeCommandExecutionContext<>(NATIVE_SOURCE);
-            new ListCommand<>(LOGGER, runtime.getConfig(), runtime.getWebsocketManager())
+            new ListCommand<>(LOGGER, () -> runtime.getConfig(), () -> runtime.getWebsocketManager())
                     .execute(source, Collections.emptyList());
             List<String> messages = source.getReplies();
 
@@ -182,7 +182,7 @@ class CommandLayerTest {
             startRuntime();
 
             FakeCommandExecutionContext<Object> source = new FakeCommandExecutionContext<>(NATIVE_SOURCE);
-            new ReconnectCommand<>(LOGGER, runtime.getWebsocketManager())
+            new ReconnectCommand<>(LOGGER, () -> runtime.getWebsocketManager())
                     .reconnect(source, false);
             List<String> messages = source.getReplies();
 
@@ -299,7 +299,7 @@ class CommandLayerTest {
             startRuntime();
 
             FakeCommandExecutionContext<Object> context = new FakeCommandExecutionContext<>(NATIVE_SOURCE);
-            new ReconnectCommand<>(LOGGER, runtime.getWebsocketManager()).reconnect(context, false);
+            new ReconnectCommand<>(LOGGER, () -> runtime.getWebsocketManager()).reconnect(context, false);
 
             List<String> messages = context.getReplies();
             String expectedUrlPrefix = "ws://127.0.0.1:" + deadPort;
@@ -473,7 +473,8 @@ class CommandLayerTest {
      */
     private static final class ConfigFixture implements AutoCloseable {
 
-        private static final Path CONFIG_PATH = ConfigStore.resolveConfigPath(false);
+        private static final Path CONFIG_PATH = ConfigStore.resolveConfigPath(
+                PlatformStubs.noopPlatformContext().getDataDirectory());
         private static final Path BACKUP_PATH = CONFIG_PATH.resolveSibling(CONFIG_PATH.getFileName() + ".bak");
 
         private final byte[] previousContent;

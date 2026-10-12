@@ -239,6 +239,21 @@ public abstract class CommandExecutionContext<NCS> {
 - `RconException.Kind`（`DISABLED` / `DISCONNECTED` / `COMMAND_FAILED`），用于区分 Rcon 失败性质。
 - `Tool.isDebugEnabled()` 由 private 改为 public，便于调用方在构造昂贵的日志参数前先行判断。
 - `WsClient#isReconnectInProgress()` / `getReconnectAttempts()` / `isStopped()`：重连状态诊断接口。
+- **最小 Extension SPI**（`0.7.0-beta.3` 起）：`extension.QueQiaoExtension` +
+  `extension.QueQiaoExtensionContext`。外部附属模块（Addon）可以挂载到**已经存在的**
+  QueQiao Runtime，通过 `QueQiaoExtensionContext.registerApi(Api)` 注册新的协议 API。
+  - Extension 由**平台宿主**负责发现并创建，再交给
+    `QueQiaoRuntime.create(configurer, platformContext, apiConfigurer, extensions)`；
+    Core 不含任何平台发现机制（不感知 Bukkit / Fabric / Forge / NeoForge / Velocity 的加载器）。
+  - Extension API 与内置 API 进入**同一份** API 集合，因此复用现有的 `ProtocolRouter`、
+    `Response`、`echo` 与 WebSocket 传输——**不存在第二套路由或第二套 WebSocket**。
+  - 注册只发生在启动装配阶段；装配结束后 `QueQiaoExtensionContext` 会被 seal，
+    再调用 `registerApi` 抛 `IllegalStateException`。当前**不支持**运行期动态注册或卸载。
+  - 扩展不持有 Runtime，也拿不到 `WebsocketManager` / `ProtocolRouter` / 平台上下文；
+    它只能"贡献能力"，不能读取或改写其它 API。
+  - 扩展注册失败或 `extensions` 含 null 元素时，Runtime 构造**整体失败**，不会留下部分可用的 Runtime。
+  - 原 `QueQiaoRuntime.create(configurer, platformContext, apiConfigurer)` 保持可用，
+    等价于传入空扩展集合。
 
 ### 变更
 

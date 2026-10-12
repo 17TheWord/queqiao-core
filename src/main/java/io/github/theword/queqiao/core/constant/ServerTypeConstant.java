@@ -22,10 +22,11 @@ public class ServerTypeConstant {
     /**
      * 判断是否为模组服务端类型
      *
-     * <p>模组端与插件端的配置目录布局不同（{@code config/} 与 {@code plugins/}），
+     * <p>模组端与插件端的数据目录布局不同（{@code config/} 与 {@code plugins/}），
      * 因此需要据此区分。注意：本方法只覆盖"模组即等于 config 目录"的常见情形，
      * 若将来出现例外平台（如 Sponge 是插件平台但配置走 {@code config/}），
-     * 应由该平台覆盖 {@code AbstractPlatformContext#isModServer()}。
+     * 应由该平台覆盖 {@code AbstractPlatformContext#getDataDirectory()} ——
+     * 这是 Core 认的<b>唯一</b>目录入口，本方法只作为它的默认推导依据。
      *
      * @param type 平台类型，取值应来自本类的常量
      * @return 是否为模组服务端类型

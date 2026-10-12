@@ -7,6 +7,7 @@ import java.util.UUID;
 import com.google.gson.JsonElement;
 
 import io.github.theword.queqiao.core.constant.ServerTypeConstant;
+import io.github.theword.queqiao.core.event.model.PlayerModel;
 
 public class PlatformContext extends AbstractPlatformContext<TestServer, TestComponent, TestPlayer> {
 
@@ -44,6 +45,14 @@ public class PlatformContext extends AbstractPlatformContext<TestServer, TestCom
     @Override
     public UUID getPlayerUUID(TestPlayer player) {
         return player.getUuid();
+    }
+
+    @Override
+    public PlayerModel getPlayerModel(TestPlayer player) {
+        PlayerModel playerModel = new PlayerModel();
+        playerModel.setNickname(player.getName());
+        playerModel.setUuid(player.getUuid());
+        return playerModel;
     }
 
     @Override

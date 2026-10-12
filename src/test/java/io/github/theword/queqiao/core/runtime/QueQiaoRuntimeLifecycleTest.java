@@ -1,11 +1,11 @@
 package io.github.theword.queqiao.core.runtime;
 
-import io.github.theword.queqiao.core.config.io.ConfigStore;
 import io.github.theword.queqiao.core.config.schema.ConfigKey;
 import io.github.theword.queqiao.core.config.codec.StringCodec;
 import io.github.theword.queqiao.core.event.PlayerChatEvent;
 import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
 import io.github.theword.queqiao.core.protocol.handler.status.ServerStatusCollector;
+import io.github.theword.queqiao.core.support.DisabledConfigFixture;
 import io.github.theword.queqiao.core.support.PlatformStubs;
 import io.github.theword.queqiao.core.response.PrivateMessageResponse;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
@@ -16,11 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
 import java.lang.reflect.Field;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.UUID;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 
@@ -156,12 +152,21 @@ class QueQiaoRuntimeLifecycleTest {
     }
 
     @Test
-    @DisplayName("未启动时 translate 返回原 key，翻译为关闭状态")
-    void translateBeforeStartReturnsKey() {
-        QueQiaoRuntime created = newRuntime();
-
-        assertEquals("death.attack.player", created.translate("death.attack.player", new String[] {"Steve"}));
-        assertFalse(created.isTranslationEnabled(), "未启动时翻译应为关闭状态");
+    @DisplayName("start 按配置调度平台翻译服务；shutdown 后不留活动翻译状态")
+    void startSchedulesPlatformTranslationService() throws Exception {
+        try (DisabledConfigFixture ignored = new DisabledConfigFixture()) {
+            AbstractPlatformContext<?, ?, ?> platform = PlatformStubs.noopPlatformContext();
+            QueQiaoRuntime created = QueQiaoRuntime.create(null, platform, null);
+            try {
+                created.start();
+                assertFalse(platform.getTranslationService().isEnabled(),
+                        "配置中禁用翻译时，平台翻译服务应保持关闭");
+            } finally {
+                created.shutdown();
+            }
+            assertFalse(platform.getTranslationService().isEnabled(),
+                    "关闭后翻译服务不应处于活动状态");
+        }
     }
 
     // ------------------------------------------------------------------
@@ -288,64 +293,4 @@ class QueQiaoRuntimeLifecycleTest {
         return (ScheduledThreadPoolExecutor) field.get(collector);
     }
 
-    /**
-     * "全部禁用"配置夹具
-     *
-     * <p>把 WebSocket Server / Client / Rcon 全部关闭，使 {@code start()} 不绑定端口、
-     * 不建立任何连接。构造时备份原配置文件，{@link #close()} 时还原。
-     */
-    private static final class DisabledConfigFixture implements AutoCloseable {
-
-        private static final Path CONFIG_PATH = ConfigStore.resolveConfigPath(false);
-        private static final Path BACKUP_PATH = CONFIG_PATH.resolveSibling(CONFIG_PATH.getFileName() + ".bak");
-
-        private static final String DISABLED_CONFIG = String.join("\n",
-                "enable: true",
-                "debug: false",
-                "server_name: \"TestServer\"",
-                "access_token: \"\"",
-                "message_prefix: \"[鹊桥]\"",
-                "enable_translation: false",
-                "websocket_server:",
-                "  enable: false",
-                "  host: \"127.0.0.1\"",
-                "  port: 8080",
-                "websocket_client:",
-                "  enable: false",
-                "  reconnect_interval: 1",
-                "  reconnect_max_times: 1",
-                "  url_list: []",
-                "rcon:",
-                "  enable: false",
-                "  port: 25575",
-                "  password: \"\"",
-                "subscribe_event:",
-                "  player_chat: false",
-                "  player_death: false",
-                "  player_join: false",
-                "  player_quit: false",
-                "  player_command: false",
-                "  player_advancement: false",
-                "ignored_commands: []",
-                "");
-
-        private final byte[] previousContent;
-
-        private DisabledConfigFixture() throws IOException {
-            this.previousContent = Files.exists(CONFIG_PATH) ? Files.readAllBytes(CONFIG_PATH) : null;
-            Files.createDirectories(CONFIG_PATH.getParent());
-            Files.write(CONFIG_PATH, DISABLED_CONFIG.getBytes(StandardCharsets.UTF_8));
-            LOGGER.info("已写入禁用全部传输层的测试配置：{}", CONFIG_PATH.toAbsolutePath());
-        }
-
-        @Override
-        public void close() throws IOException {
-            if (previousContent != null) {
-                Files.write(CONFIG_PATH, previousContent);
-                return;
-            }
-            Files.deleteIfExists(CONFIG_PATH);
-            Files.deleteIfExists(BACKUP_PATH);
-        }
-    }
 }

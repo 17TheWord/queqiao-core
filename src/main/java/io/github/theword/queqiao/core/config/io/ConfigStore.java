@@ -1,6 +1,5 @@
 package io.github.theword.queqiao.core.config.io;
 
-import io.github.theword.queqiao.core.constant.BaseConstant;
 import org.slf4j.Logger;
 
 import java.io.IOException;
@@ -10,24 +9,19 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 
 /**
- * 配置文件写入器
+ * 配置文件的路径解析与写入。
  *
- * <p><b>本类不在正常启动路径上被调用</b>——正常启动只读不写 {@code config.yml}。
- * 它提供给<b>真正需要覆盖用户文件</b>的场景：
- * 未来的 {@code ConfigMigration}、显式的"同步配置"命令。
+ * <p>只接收调用方给出的路径，不推断模组端 / 插件端 —— 数据目录由
+ * {@code AbstractPlatformContext#getDataDirectory()} 决定。
  *
- * <p>保证：
- * <ul>
- *     <li><b>原子写</b>：临时文件 → 完整写入 → fsync → {@code ATOMIC_MOVE}。
- *         文件系统不支持时降级为 {@code REPLACE_EXISTING} 并<b>记录日志</b>；</li>
- *     <li><b>可恢复备份</b>：轮换保留最多 {@value #MAX_BACKUPS} 份，
- *         避免单份备份被下一次写入覆盖。</li>
- * </ul>
+ * <p>写入保证：原子替换（临时文件 → fsync → {@code ATOMIC_MOVE}，文件系统不支持时降级为
+ * 普通替换并记录日志），以及最多 {@value #MAX_BACKUPS} 份的轮换备份。
+ *
+ * <p>正常启动只读不写 {@code config.yml}；写入路径服务于显式覆盖用户文件的场景。
  *
  * @since 0.6.11
  */
@@ -44,18 +38,13 @@ public final class ConfigStore {
     }
 
     /**
-     * 解析配置文件路径
+     * 返回数据目录下的 {@code config.yml} 路径。
      *
-     * <p>插件端为 {@code plugins/QueQiao/config.yml}，模组端为 {@code config/QueQiao/config.yml}
-     * （相对工作目录）。<b>统一使用 {@code BaseConstant.MODULE_NAME}</b>，
-     * 避免出现 {@code QueQiao} 与 {@code queqiao} 两套目录（Linux 下会真的分成两个）。
-     *
-     * @param isModServer 是否为模组服务端
+     * @param dataDirectory 平台数据目录
      * @return 配置文件路径
      */
-    public static Path resolveConfigPath(boolean isModServer) {
-        String configFolder = isModServer ? "config" : "plugins";
-        return Paths.get(configFolder).resolve(BaseConstant.MODULE_NAME).resolve("config.yml");
+    public static Path resolveConfigPath(Path dataDirectory) {
+        return dataDirectory.resolve("config.yml");
     }
 
     /**

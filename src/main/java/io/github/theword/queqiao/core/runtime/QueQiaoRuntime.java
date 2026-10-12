@@ -14,12 +14,16 @@ import io.github.theword.queqiao.core.config.io.ConfigWriteSnapshot;
 import io.github.theword.queqiao.core.config.io.ConfigWriter;
 import io.github.theword.queqiao.core.api.Api;
 import io.github.theword.queqiao.core.api.DefaultApis;
+import io.github.theword.queqiao.core.command.CommandRouter;
+import io.github.theword.queqiao.core.command.RootCommand;
 import io.github.theword.queqiao.core.constant.BaseConstant;
+import io.github.theword.queqiao.core.constant.CommandConstant;
 import io.github.theword.queqiao.core.constant.WebsocketConstantMessage;
 import io.github.theword.queqiao.core.event.base.BaseEvent;
 import io.github.theword.queqiao.core.exception.rcon.RconException;
+import io.github.theword.queqiao.core.extension.QueQiaoExtension;
+import io.github.theword.queqiao.core.extension.QueQiaoExtensionDiscovery;
 import io.github.theword.queqiao.core.handle.HandleProtocolMessage;
-import io.github.theword.queqiao.core.localize.LanguageService;
 import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
 import io.github.theword.queqiao.core.protocol.handler.status.ServerStatusCollector;
 import io.github.theword.queqiao.core.rcon.RconClient;
@@ -37,11 +41,24 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
+/**
+ * 鹊桥运行时：装配并托管一次运行所需的全部 Core 组件。
+ *
+ * <p>平台只需提供 {@link AbstractPlatformContext}（以及可选的扩展来源），
+ * Config、WebSocket、RCON、命令路由、协议分发与翻译调度都由本类装配，
+ * 平台不必了解 Core 的内部对象图。
+ *
+ * <p>生命周期单向：{@code NEW → STARTING → RUNNING → STOPPING → STOPPED}，
+ * 启动失败进入 {@code FAILED}，不支持重启。
+ */
 public final class QueQiaoRuntime {
 
     // ------------------------------------------------------------------
@@ -49,18 +66,13 @@ public final class QueQiaoRuntime {
     // ------------------------------------------------------------------
 
     /**
-     * 生命周期状态
-     *
-     * <p>迁移单向：{@code NEW → STARTING → RUNNING → STOPPING → STOPPED}；
-     * 启动失败时 {@code STARTING → FAILED}。<b>不支持重新启动</b>。
+     * 生命周期状态，迁移单向，不支持重启。
      */
     private final AtomicReference<RuntimeState> state = new AtomicReference<>(RuntimeState.NEW);
 
     /**
-     * 串行化 {@code start()} / {@code reload()} / {@code shutdown()} 的生命周期锁
-     *
-     * <p>目的不是保护业务数据，而是保证这三个操作不会并发改变 Runtime 生命周期。
-     * 它<b>不</b>替代 Config / WebSocket / RCON 各自的同步机制。
+     * 串行化 {@code start()} / {@code reload()} / {@code shutdown()} 的生命周期锁。
+     * 它不替代 Config / WebSocket / RCON 各自的同步机制。
      */
     private final Object lifecycleLock = new Object();
 
@@ -69,47 +81,27 @@ public final class QueQiaoRuntime {
     // ------------------------------------------------------------------
 
     /**
-     * Runtime 作用域辅助能力
-     *
-     * <p>随 Runtime 生命周期创建一次、之后不再替换，因此直接以 {@code public final}
-     * 暴露为固定入口，调用形式为 {@code runtime.utils.debugLog(...)}。
-     *
-     * <p>注意：本字段是 Runtime 上<b>唯一</b>的 {@code public final} 字段。
-     * Config / WebsocketManager / RconClient 等存在 reload 或替换语义的对象
-     * 继续维持原有的 private + getter 形式。
+     * Runtime 作用域辅助能力，随 Runtime 创建一次后不再替换。
      */
     public final RuntimeUtils utils;
 
     private final Gson gson;
 
     /**
-     * 协议分发入口
-     *
-     * <p>属于平台级能力而非 WebSocket 传输层细节：分发逻辑与传输方式无关，
-     * 因此在此处创建唯一实例，再注入给各传输层（当前为 WebSocket，未来可含 HTTP）。
-     *
-     * <p>该对象构造后即不可变，可安全地在多个连接/线程间共享。
+     * 协议分发入口，与传输方式无关；构造后不可变，可跨连接与线程共享。
      */
     private final HandleProtocolMessage handleProtocolMessage;
 
     /**
-     * 服务器状态采集器
-     *
-     * <p>Runtime 实例级持有：快照缓存、探测目标、刷新线程池与任务全部属于本实例，
-     * 因此同一 JVM 中的多个 Runtime 之间不存在状态共享。
-     *
-     * <p>生命周期由 Runtime 管理（start 启动、reload 刷新目标与间隔、shutdown 停止）。
+     * 服务器状态采集器。实例级持有，不与其他 Runtime 共享状态；生命周期由 Runtime
+     * 管理（start 启动、reload 刷新、shutdown 停止）。
      */
     private final ServerStatusCollector serverStatusCollector;
 
     // ------------------------------------------------------------------
     // 会随 start / reload / shutdown 变化的字段
     //
-    // 标记为 volatile：这些字段由 init / reload 线程写入，由游戏线程与 WebSocket 线程读取。
-    // 单个字段的可见性由此得到保证，但<b>跨字段的原子快照没有保证</b>——
-    // 并发 reload 期间可能瞬时读到新旧混合的值。如需绝对一致，
-    // 应改为"不可变状态对象整体替换"。当前 reload 本身会输出日志与消息，
-    // 瞬时不一致可接受，故不为此引入额外复杂度。
+    // 标记为 volatile 只保证单字段可见性；并发 reload 期间可能瞬时读到新旧混合的值。
     // ------------------------------------------------------------------
 
     /**
@@ -123,23 +115,19 @@ public final class QueQiaoRuntime {
     private volatile Config config;
 
     /**
-     * 当前配置文档（保留未知字段与原始结构，供 Writer / Checker / Synchronizer 使用）
-     *
-     * <p>不能只凭 Runtime 重建文档——Runtime 不知道未知字段与文档结构。
+     * 当前配置文档，保留未知字段与原始结构，供 Writer / Checker / Synchronizer 使用。
      */
     private volatile ConfigDocument configDocument;
 
     /**
-     * 日志实现
-     *
-     * <p>非 final：为兼容既有的 {@link #setLogger(Logger)} 公开接口。
-     *
-     * <p>注意：{@link HandleProtocolMessage}、{@link RuntimeUtils} 等协作者在构造时即捕获 logger，
-     * 因此运行期替换 logger 只会影响之后才通过 {@link #getLogger()} 读取的路径，
-     * 不会改变已构造对象的日志输出。
+     * 日志实现。非 final 以支持 {@link #setLogger(Logger)}；已在构造时捕获 logger 的
+     * 协作者不受运行期替换影响。
      */
     private volatile Logger logger;
 
+    /**
+     * 平台上下文，构造时注入，之后不再变化。
+     */
     public final AbstractPlatformContext<?, ?, ?> platformContext;
 
     private volatile WebsocketManager websocketManager;
@@ -151,12 +139,11 @@ public final class QueQiaoRuntime {
 
     private volatile JsonElement messagePrefixJsonElement;
 
-    private volatile LanguageService languageService;
-
     private QueQiaoRuntime(
             Logger logger,
             AbstractPlatformContext<?, ?, ?> platformContext,
-            Consumer<List<Api<?, ?>>> apiConfigurer
+            Consumer<List<Api<?, ?>>> apiConfigurer,
+            Collection<? extends QueQiaoExtension> extensions
     ) {
         this.logger = logger;
         this.gson = GsonUtils.getGson();
@@ -173,7 +160,10 @@ public final class QueQiaoRuntime {
         // 再等服务器启动完成，不必在构造瞬间就拿到版本。
         this.serverStatusCollector = new ServerStatusCollector(
                 platformContext::getServerType, platformContext::getServerVersion, logger);
-        // 协议层接线：先铺默认批次，再交给使用方自由增删（自愿注册）。
+        // 协议层接线（固定顺序，全部发生在 ProtocolRouter 构造之前）：
+        //   1. 铺默认批次   2. 交给使用方自由增删（自愿注册）   3. 安装 Extension 贡献的 API
+        // 三者写入的是<b>同一份</b>列表，因此 Extension 与内置 API 共享同一张路由表，
+        // 不存在第二套路由，也不会因为"来源不同"而产生行为差异。
         // 这里传入 this::sendRconCommand 是安全的：该 lambda 只在收到请求时才会被调用，
         // 此时对象早已构造完成（构造期间不会被发布）。
         List<Api<?, ?>> apis = new ArrayList<>(
@@ -181,20 +171,52 @@ public final class QueQiaoRuntime {
         if (apiConfigurer != null) {
             apiConfigurer.accept(apis);
         }
+        installExtensions(extensions, apis);
         this.handleProtocolMessage = new HandleProtocolMessage(logger, this.gson, apis, this.utils);
     }
 
     /**
-     * 创建运行时并在配置加载前注册扩展配置。
+     * 安装 Extension：把每个扩展贡献的 API 加入同一份最终 API 集合
      *
-     * <p><b>构造不变量</b>：平台实现是 API 边界的必填依赖，此处立即校验并指明参数名。
-     * 若不在此拦截，会拖到"第一条协议请求"或"第一条命令"执行时才抛 NPE，定位成本很高。
+     * <p>注册阶段结束时<b>无条件 seal</b>（含异常路径）：扩展即使保存了 context 引用，
+     * 也无法在装配结束后再向路由表追加 API，从而保住"路由表构造后不可变"这一不变量。
      *
-     * @param configurer 可选的启动期 Schema 注册回调
-     * @param platformContext 平台上下文；服务端类型、版本、是否模组端均由它提供，
-     *                        因此不再作为独立参数传入
-     * @param apiConfigurer 可选的 Api 装配回调；收到的是<b>已铺好默认批次</b>的可变列表，
-     *                      可自由增删以实现"自愿注册"
+     * <p><b>fail-fast</b>：集合含 null 元素、或任一扩展的 register 抛异常时，
+     * 直接让 Runtime 构造失败。不采用"记日志后继续启动"——因为此时已可能有部分 API
+     * 被注册，继续启动会得到一个状态不明确的 Runtime。
+     *
+     * @param extensions 平台宿主提供的扩展集合，不得为 null；元素不得为 null
+     * @param apis       Runtime 正在装配的 API 列表
+     */
+    private static void installExtensions(
+            Collection<? extends QueQiaoExtension> extensions, List<Api<?, ?>> apis) {
+        RuntimeExtensionContext context = new RuntimeExtensionContext(apis);
+        try {
+            for (QueQiaoExtension extension : extensions) {
+                if (extension == null) {
+                    throw new NullPointerException("extensions 中不得包含 null 元素");
+                }
+                try {
+                    extension.register(context);
+                } catch (RuntimeException e) {
+                    throw new IllegalStateException(
+                            "Failed to register extension: " + extension.getClass().getName(), e);
+                }
+            }
+        } finally {
+            context.seal();
+        }
+    }
+
+    /**
+     * 创建运行时，不安装任何扩展。
+     *
+     * <p>等价于
+     * {@code create(configurer, platformContext, apiConfigurer, Collections.emptyList())}。
+     *
+     * @param configurer      可选的启动期 Schema 注册回调
+     * @param platformContext 平台上下文，不得为 null
+     * @param apiConfigurer   可选的 Api 装配回调；收到的是已铺好默认批次的可变列表，可自由增删
      * @return 尚未启动的运行时
      */
     public static QueQiaoRuntime create(
@@ -202,13 +224,40 @@ public final class QueQiaoRuntime {
             AbstractPlatformContext<?, ?, ?> platformContext,
             Consumer<List<Api<?, ?>>> apiConfigurer
     ) {
+        return create(configurer, platformContext, apiConfigurer, Collections.emptyList());
+    }
+
+    /**
+     * 创建运行时，并安装平台宿主提供的 {@link QueQiaoExtension}。
+     *
+     * <p>API 装配顺序：默认批次 → {@code apiConfigurer} → Extensions → seal；
+     * 扩展与内置 API 进入同一份最终集合，共用同一套路由与 echo 机制。
+     *
+     * <p>fail-fast：{@code extensions} 为 null、含 null 元素，或任一扩展的
+     * {@link QueQiaoExtension#register} 抛异常时直接失败，不会返回半装配的 Runtime。
+     *
+     * @param configurer      可选的启动期 Schema 注册回调
+     * @param platformContext 平台上下文，不得为 null
+     * @param apiConfigurer   可选的 Api 装配回调，可为 null
+     * @param extensions      扩展集合，不得为 null；无扩展时传 {@code Collections.emptyList()}
+     * @return 尚未启动的运行时
+     */
+    public static QueQiaoRuntime create(
+            Consumer<ConfigRegistry> configurer,
+            AbstractPlatformContext<?, ?, ?> platformContext,
+            Consumer<List<Api<?, ?>>> apiConfigurer,
+            Collection<? extends QueQiaoExtension> extensions
+    ) {
         Objects.requireNonNull(
                 platformContext, "platformContext 不能为 null：平台必须提供 AbstractPlatformContext 实现");
+        Objects.requireNonNull(
+                extensions, "extensions 不能为 null：无扩展时请传 Collections.emptyList()");
         Logger runtimeLogger = LoggerFactory.getLogger(BaseConstant.MODULE_NAME);
         QueQiaoRuntime runtime = new QueQiaoRuntime(
                 runtimeLogger,
                 platformContext,
-                apiConfigurer
+                apiConfigurer,
+                extensions
         );
         if (configurer != null) {
             configurer.accept(runtime.configRegistry);
@@ -216,19 +265,194 @@ public final class QueQiaoRuntime {
         return runtime;
     }
 
+    // ------------------------------------------------------------------
+    // 便捷启动 API
+    //
+    // 普通平台只需要"平台上下文"（以及可选的扩展来源）这两样东西。
+    // 上面的完整 create(...) 仍然保留，供 Core 测试、需要自定义 configurer /
+    // apiConfigurer 的高级 Host 使用。
+    // ------------------------------------------------------------------
+
     /**
-     * 加载配置文件并提交到 {@link Config}
+     * 创建运行时（不安装任何扩展）
      *
-     * <p><b>四状态语义</b>（沿用 {@code ConfigFileState}）：
-     * <ul>
-     *     <li>{@code MISSING} / {@code EMPTY}：全部使用 Schema 默认值，并生成一份完整的
-     *         带注释 {@code config.yml}（首次启动体验）；</li>
-     *     <li>{@code VALID}：加载后<b>只读不写</b>——正常启动不得无条件重写用户文件；</li>
-     *     <li>{@code INVALID}：抛出异常且<b>不修改运行时状态</b>，由上层终止初始化。</li>
-     * </ul>
+     * <p>等价于 {@code create(null, platformContext, null, Collections.emptyList())}。
+     *
+     * @param platformContext 平台上下文，不得为 null
+     * @return 尚未启动的运行时
+     */
+    public static QueQiaoRuntime create(AbstractPlatformContext<?, ?, ?> platformContext) {
+        return create(null, platformContext, null, Collections.emptyList());
+    }
+
+    /**
+     * 创建运行时并安装给定的扩展集合
+     *
+     * @param platformContext 平台上下文，不得为 null
+     * @param extensions      扩展集合，不得为 null；元素不得为 null
+     * @return 尚未启动的运行时
+     */
+    public static QueQiaoRuntime create(
+            AbstractPlatformContext<?, ?, ?> platformContext,
+            Collection<? extends QueQiaoExtension> extensions
+    ) {
+        return create(null, platformContext, null, extensions);
+    }
+
+    /**
+     * 创建运行时，扩展由平台的 {@link QueQiaoExtensionDiscovery} 发现。
+     *
+     * <p>Core 不规定发现方式，只接收结果。
+     *
+     * @param platformContext 平台上下文，不得为 null
+     * @param discovery       扩展发现入口，不得为 null；其 {@code discover()} 不得返回 null
+     * @return 尚未启动的运行时
+     */
+    public static QueQiaoRuntime create(
+            AbstractPlatformContext<?, ?, ?> platformContext,
+            QueQiaoExtensionDiscovery discovery
+    ) {
+        return create(platformContext, discoverExtensions(discovery));
+    }
+
+    /**
+     * 创建并启动运行时，不安装任何扩展。
+     *
+     * <p>等价于 {@code create(platformContext)} + {@code runtime.start()}；启动失败沿用
+     * {@link #start()} 的语义，抛异常且 Runtime 已完成自清理。
+     *
+     * @param platformContext 平台上下文，不得为 null
+     * @return 已启动的运行时
+     */
+    public static QueQiaoRuntime start(AbstractPlatformContext<?, ?, ?> platformContext) {
+        QueQiaoRuntime runtime = create(platformContext);
+        runtime.start();
+        return runtime;
+    }
+
+    /**
+     * 创建并启动运行时，并安装给定的扩展集合
+     *
+     * @param platformContext 平台上下文，不得为 null
+     * @param extensions      扩展集合，不得为 null；元素不得为 null
+     * @return 已启动的运行时
+     */
+    public static QueQiaoRuntime start(
+            AbstractPlatformContext<?, ?, ?> platformContext,
+            Collection<? extends QueQiaoExtension> extensions
+    ) {
+        QueQiaoRuntime runtime = create(platformContext, extensions);
+        runtime.start();
+        return runtime;
+    }
+
+    /**
+     * 创建并启动运行时，扩展由平台的 {@link QueQiaoExtensionDiscovery} 发现。
+     *
+     * <p>支持扩展的平台最常用这一条：
+     * {@code runtime = QueQiaoRuntime.start(platform, FabricExtensionDiscovery::discover);}
+     *
+     * @param platformContext 平台上下文，不得为 null
+     * @param discovery       扩展发现入口，不得为 null；其 {@code discover()} 不得返回 null
+     * @return 已启动的运行时
+     */
+    public static QueQiaoRuntime start(
+            AbstractPlatformContext<?, ?, ?> platformContext,
+            QueQiaoExtensionDiscovery discovery
+    ) {
+        QueQiaoRuntime runtime = create(platformContext, discovery);
+        runtime.start();
+        return runtime;
+    }
+
+    /**
+     * 调用发现入口并校验返回值。
+     *
+     * <p>{@code discover()} 返回 null 属于装配错误，不静默当成"没有扩展"。
+     */
+    private static Collection<? extends QueQiaoExtension> discoverExtensions(
+            QueQiaoExtensionDiscovery discovery) {
+        Objects.requireNonNull(discovery, "discovery");
+        Collection<? extends QueQiaoExtension> discovered = discovery.discover();
+        Objects.requireNonNull(
+                discovered,
+                "discovery.discover() 不得返回 null：没有扩展时请返回空集合");
+        return discovered;
+    }
+
+    /**
+     * 创建本 Runtime 的命令路由。
+     *
+     * <p>前置条件：Runtime 必须已 {@link #start()} 成功 —— {@code WebsocketManager}
+     * 只在 start 之后存在。{@code NCS} 是方法级泛型，Runtime 自身不被参数化。
+     *
+     * @param <NCS> 平台原生命令来源类型
+     * @return 命令路由
+     */
+    public <NCS> CommandRouter<NCS> createCommandRouter() {
+        return new CommandRouter<>(logger, config, websocketManager, this::reload);
+    }
+
+    /**
+     * 创建一棵<b>在 Runtime 启动之前</b>即可构建的完整命令树。
+     *
+     * <p>调用时 Runtime 可以尚不存在：{@code Config}、{@code WebsocketManager} 与 reload
+     * 都通过 {@code runtimeSupplier} 延迟获取，只有命令真正执行时才取值。
+     * 因此节点名称、子节点与权限元数据在 Runtime 未启动时也可读取，平台可以在注册命令时
+     * 就把整棵树映射到自己的命令 API，无需自行解析路径或实现补全。
+     *
+     * <p>返回的树已冻结（结构不可再修改），Runtime 被替换后
+     * 也无需重建命令树 —— 下一次执行会通过供应商取到新实例。
+     *
+     * <p>Runtime 未就绪（供应商返回 null，或状态不是 {@link RuntimeState#RUNNING}）时，
+     * 依赖运行状态的命令回执 {@link CommandConstant#RUNTIME_NOT_READY} 并安全返回，不抛异常。
+     *
+     * @param logger          日志实现，不得为 null
+     * @param runtimeSupplier 当前 Runtime 的供应商，不得为 null；尚未就绪时可返回 null
+     * @param <NCS>           平台原生命令来源类型
+     * @return 已冻结的完整根命令
+     */
+    public static <NCS> RootCommand<NCS> createDeferredCommandTree(
+            Logger logger,
+            Supplier<QueQiaoRuntime> runtimeSupplier) {
+        Objects.requireNonNull(logger, "logger");
+        Objects.requireNonNull(runtimeSupplier, "runtimeSupplier");
+
+        RootCommand<NCS> root = new RootCommand<>(
+                logger,
+                () -> {
+                    QueQiaoRuntime runtime = runtimeSupplier.get();
+                    return runtime == null ? null : runtime.getConfig();
+                },
+                () -> {
+                    QueQiaoRuntime runtime = runtimeSupplier.get();
+                    return runtime == null ? null : runtime.getWebsocketManager();
+                },
+                () -> {
+                    QueQiaoRuntime runtime = runtimeSupplier.get();
+                    if (runtime == null || runtime.getState() != RuntimeState.RUNNING) {
+                        return null;
+                    }
+                    return runtime.reload();
+                });
+        // 工厂返回的就是完整树：立即冻结，保证后续（含数据包重载导致的重复注册）
+        // 只能读取结构，不可能修改它。
+        root.freeze();
+        return root;
+    }
+
+    public AbstractPlatformContext<?, ?, ?> getPlatformContext() {
+        return platformContext;
+    }
+
+    /**
+     * 加载配置文件并提交到 {@link Config}。
+     *
+     * <p>{@code MISSING} / {@code EMPTY} 时使用 Schema 默认值并生成带注释的
+     * {@code config.yml}；{@code VALID} 时只读不写；{@code INVALID} 时抛异常且不修改运行时状态。
      */
     private void loadConfig() {
-        Path configPath = ConfigStore.resolveConfigPath(platformContext.isModServer());
+        Path configPath = ConfigStore.resolveConfigPath(platformContext.getDataDirectory());
         ConfigFileReader.Result result = ConfigFileReader.read(configPath);
         ConfigLoader loader = new ConfigLoader(configRegistry, config);
 
@@ -287,23 +511,14 @@ public final class QueQiaoRuntime {
     }
 
     /**
-     * 启动运行时
+     * 启动运行时，只能启动一次。
      *
-     * <p><b>只能启动一次</b>：仅 {@link RuntimeState#NEW} 状态可以调用本方法，
-     * 其余状态一律抛出 {@link IllegalStateException}。需要"重启"时应创建新的 Runtime 实例。
+     * <p>仅 {@link RuntimeState#NEW} 状态可调用，其余状态抛 {@link IllegalStateException}；
+     * 需要重启时应创建新的 Runtime 实例。
      *
-     * <p><b>失败回滚</b>：本方法对自己创建的资源负责。启动过程中任何一步抛异常时，
-     * 都会先调用 {@link #shutdownResources()} 清理已创建的资源，把状态置为
-     * {@link RuntimeState#FAILED}，再抛出<b>原始异常</b>（不包装、不替换）。
-     * 因此各平台实现不必重复编写 try/catch + rollback，也不会出现
-     * "start() 抛异常却留下半启动 Runtime"的状态。
-     *
-     * <p>典型接线：
-     * <pre>
-     * QueQiaoRuntime runtime = QueQiaoRuntime.create(...);
-     * runtime.start();          // 失败则抛出，且 Runtime 已完成自清理（状态 FAILED）
-     * this.runtime = runtime;   // 只有 start() 成功后才发布
-     * </pre>
+     * <p>启动失败时先清理已创建的资源、把状态置为 {@link RuntimeState#FAILED}，
+     * 再抛出原始异常（不包装）。因此平台不需要自己写 try/catch + rollback，
+     * 也不会出现"抛异常却留下半启动 Runtime"的状态。
      */
     public void start() {
         synchronized (lifecycleLock) {
@@ -349,7 +564,9 @@ public final class QueQiaoRuntime {
         logger.info(BaseConstant.INITIALIZED);
 
         messagePrefixJsonElement = initMessagePrefixJsonObject(config.get(ConfigKeys.MESSAGE_PREFIX));
-        languageService = new LanguageService(platformContext.isModServer(), logger, config);
+        // 翻译服务归属平台：Runtime 只按配置调度它的生命周期，不持有、也不自行创建。
+        platformContext.getTranslationService()
+                .reload(config.get(ConfigKeys.ENABLE_TRANSLATION));
         serverStatusCollector.initPingTarget();
         serverStatusCollector.startRefreshScheduler(
                 config.get(ConfigKeys.Status.REFRESH_INTERVAL_SECONDS));
@@ -358,17 +575,12 @@ public final class QueQiaoRuntime {
     }
 
     /**
-     * 重载配置
+     * 重载配置，并同步刷新依赖配置的组件（WebSocket、RCON、状态采集、翻译）。
      *
-     * <p>只允许对 {@link RuntimeState#RUNNING} 的 Runtime 调用：reload 的语义是
-     * "运行中 Runtime 的配置重载"，不是初始化 API。{@code NEW} / {@code STARTING} /
-     * {@code STOPPED} / {@code FAILED} 状态一律抛出 {@link IllegalStateException}。
+     * <p>只允许对 {@link RuntimeState#RUNNING} 的 Runtime 调用，其余状态抛
+     * {@link IllegalStateException}。
      *
-     * <p>注意：命令层在 Runtime 关闭后仍可能持有旧的命令树；此时触发 reload 会抛出
-     * 上述异常，并由命令层的 {@code execute} 捕获后回显"命令执行出错"。
-     *
-     * <p><b>不回执</b>：Runtime 不负责向命令执行者发送消息。重载过程中的进度消息
-     * 作为 {@link ReloadResult} 返回，由调用方（通常是 {@code ReloadCommand}）决定如何展示。
+     * <p>不回执：进度消息作为 {@link ReloadResult} 返回，由调用方决定如何展示。
      *
      * @return 重载结果，携带本应展示给用户的进度消息
      */
@@ -380,10 +592,8 @@ public final class QueQiaoRuntime {
 
             loadConfig();
             messagePrefixJsonElement = initMessagePrefixJsonObject(config.get(ConfigKeys.MESSAGE_PREFIX));
-            LanguageService service = languageService;
-            if (service != null) {
-                service.reload();
-            }
+            platformContext.getTranslationService()
+                    .reload(config.get(ConfigKeys.ENABLE_TRANSLATION));
             serverStatusCollector.initPingTarget();
             serverStatusCollector.updateRefreshInterval(config.get(ConfigKeys.Status.REFRESH_INTERVAL_SECONDS));
             List<String> messages = new ArrayList<>();
@@ -397,20 +607,13 @@ public final class QueQiaoRuntime {
     }
 
     /**
-     * 关闭运行时
+     * 关闭运行时，幂等。
      *
-     * <p><b>幂等</b>，且按状态区分语义：
-     * <ul>
-     *     <li>{@link RuntimeState#NEW}：no-op，状态保持 {@code NEW}——从未启动就没有
-     *         Runtime-owned 资源，因此"先 shutdown 再 start"仍然可行；</li>
-     *     <li>{@link RuntimeState#RUNNING}：{@code RUNNING → STOPPING → STOPPED}，
-     *         期间清理全部 Runtime-owned 资源；</li>
-     *     <li>{@link RuntimeState#FAILED}：no-op，状态保持 {@code FAILED}——启动失败时
-     *         资源已完成清理，且调用方需要知道该 Runtime 曾经启动失败；</li>
-     *     <li>{@link RuntimeState#STOPPED} / {@link RuntimeState#STOPPING}：no-op。</li>
-     * </ul>
+     * <p>只有 {@link RuntimeState#RUNNING} 会真正清理资源并迁移到 {@code STOPPING → STOPPED}；
+     * {@code NEW} 与 {@code FAILED} 保持原状态不变（因此"先 shutdown 再 start"仍然可行），
+     * {@code STOPPED} / {@code STOPPING} 为 no-op。
      *
-     * <p>与 {@link #start()} 共享生命周期锁，因此不会观察到 {@code STARTING} 并强行中断启动。
+     * <p>与 {@link #start()} 共享生命周期锁，不会中断进行中的启动。
      */
     public void shutdown() {
         synchronized (lifecycleLock) {
@@ -433,11 +636,10 @@ public final class QueQiaoRuntime {
     }
 
     /**
-     * 清理全部 Runtime-owned 资源
+     * 清理 Runtime 管理生命周期的资源，并停用平台翻译服务；
+     * 顺序为状态采集器 → WebSocket → RCON → 翻译服务。
      *
-     * <p>关闭顺序保持既有约定：状态采集器 → WebSocket → RCON → 语言服务；
-     * 每一项自身都幂等，因此本方法可被"启动失败回滚"与"正常关闭"复用，
-     * 而不会把生命周期状态变化与资源清理实现耦合在一起。
+     * <p>每一项自身幂等，因此本方法可被"启动失败回滚"与"正常关闭"共用。
      */
     private void shutdownResources() {
         serverStatusCollector.stopRefreshScheduler();
@@ -456,16 +658,13 @@ public final class QueQiaoRuntime {
             }
         }
 
-        LanguageService service = languageService;
-        if (service != null) {
-            service.disable();
-        }
+        // 翻译服务由平台持有，这里只负责按生命周期停用。disable() 幂等，
+        // 且 TranslationService 构造不读磁盘，因此"从未加载过"时调用也无副作用。
+        platformContext.getTranslationService().disable();
     }
 
     /**
-     * 分发事件
-     *
-     * <p>运行时空对象状态下静默丢弃，不抛异常。
+     * 分发事件。未启动或已关闭时静默丢弃，不抛异常。
      *
      * @param baseEvent 事件
      */
@@ -585,19 +784,6 @@ public final class QueQiaoRuntime {
         return obj;
     }
 
-    public boolean isTranslationEnabled() {
-        LanguageService service = languageService;
-        return service != null && service.isInternalEnable();
-    }
-
-    public String translate(String key, String[] args) {
-        LanguageService service = languageService;
-        if (service == null) {
-            return key;
-        }
-        return service.translate(key, args);
-    }
-
     /**
      * @return 配置运行时状态（<b>唯一</b>配置状态来源）
      */
@@ -622,12 +808,8 @@ public final class QueQiaoRuntime {
     }
 
     /**
-     * 替换日志实现（仅为兼容保留的公开接口）
-     *
-     * <p>只影响之后才通过 {@link #getLogger()} 读取的路径。
-     * 已经构造的协作者（{@link HandleProtocolMessage}、{@link RuntimeUtils}、
-     * {@link ServerStatusCollector}、{@link LanguageService} 等）在构造时即捕获 logger，
-     * 不会被本次替换影响。
+     * 替换日志实现。只影响之后通过 {@link #getLogger()} 读取的路径；已构造的协作者
+     * 在构造时即捕获 logger，不受影响。
      *
      * @param logger 新的日志实现
      */
@@ -646,7 +828,7 @@ public final class QueQiaoRuntime {
     }
 
     /**
-     * @return 服务端版本，由平台上下文提供（延迟获取，{@code start()} 之后可用）
+     * @return 服务端版本，由平台上下文提供
      */
     public String getServerVersion() {
         return platformContext.getServerVersion();

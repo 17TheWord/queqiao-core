@@ -6,16 +6,18 @@ import io.github.theword.queqiao.core.config.Config;
 import io.github.theword.queqiao.core.utils.WebsocketManager;
 import org.slf4j.Logger;
 
+import java.util.function.Supplier;
+
 public class ClientCommand<NCS> extends CommandNode<NCS> {
 
     public ClientCommand(
             Logger logger,
-            Config config,
-            WebsocketManager websocketManager) {
+            Supplier<Config> configSupplier,
+            Supplier<WebsocketManager> websocketSupplier) {
         super(logger);
         // 注册子命令
-        addChild(new ListCommand<>(logger, config, websocketManager));
-        addChild(new ReconnectCommand<>(logger, websocketManager));
+        addChild(new ListCommand<>(logger, configSupplier, websocketSupplier));
+        addChild(new ReconnectCommand<>(logger, websocketSupplier));
     }
 
     /**

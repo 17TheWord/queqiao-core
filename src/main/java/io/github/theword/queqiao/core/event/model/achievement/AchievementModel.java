@@ -1,34 +1,28 @@
 package io.github.theword.queqiao.core.event.model.achievement;
 
 import io.github.theword.queqiao.core.event.model.TranslateModel;
-import io.github.theword.queqiao.core.localize.LanguageService;
+import io.github.theword.queqiao.core.translation.TranslationService;
 
 /**
- * 成就模型
+ * 成就事件的数据载体。
+ *
+ * <p>平台负责把原生组件解析为 {@link TranslateModel}，译文由
+ * {@link TranslationService} 查询并格式化。本类不执行翻译。
  */
 public class AchievementModel {
 
     /**
      * 成就唯一标识
-     *
-     * <p>服务端支持：Fabric、Forge、Folia、NeoForge、Paper、Spigot
      */
     private String key;
 
     /**
      * 成就展示信息
-     *
-     * <p>服务端支持：Fabric、Forge、Folia、NeoForge、Paper
      */
     private DisplayModel display;
 
     /**
-     * 成就消息的翻译模型。
-     * <p>
-     * 该属性包含了用于国际化显示的所有原始数据，包括翻译键（Translation Key）和参数列表。
-     * 建议配合 {@link LanguageService LanguageService} 进行解析。
-     * </p>
-     * <p>服务端支持：Fabric, Forge, Folia, NeoForge, Paper</p>
+     * 成就消息的翻译模型，携带翻译键与参数。
      *
      * @see TranslateModel
      * @since 0.6.0
@@ -36,16 +30,15 @@ public class AchievementModel {
     private TranslateModel translation;
 
     /**
-     * 格式化成就消息
-     * <p> frame 不能为空，需先对其进行 set
+     * 按框架类型拼接成就消息文本。
      *
      * @param frame    成就框架（goal、challenge、task、default）
      * @param nickname 玩家昵称
      * @param title    成就标题
-     * @return 格式化后的成就消息
-     * @deprecated 自 0.6.0 起弃用。硬编码拼接不利于国际化，
-     *             请改用 {@link #getTranslationKey(String)} 获取翻译键，
-     *             并配合 LanguageService 进行翻译。
+     * @return 拼接后的文本
+     * @deprecated 自 0.6.0 起弃用：硬编码拼接无法国际化。
+     *             请改用 {@link #getTranslationKey(String)} 取翻译键，
+     *             再由 {@link TranslationService} 查询译文。
      */
     @Deprecated
     public String pattern(String frame, String nickname, String title) {
@@ -68,12 +61,10 @@ public class AchievementModel {
     }
 
     /**
-     * 获取成就类型的国际化翻译键。
-     * <p>
-     * 该方法将成就框架映射为 Minecraft 标准的翻译键（例如：chat.type.advancement.goal）。
+     * 把成就框架映射为 Minecraft 翻译键，例如 {@code chat.type.advancement.goal}。
      *
-     * @param frame 成就框架类型，如果为 null 或空字符串，则默认按照 "task" 处理。
-     * @return 对应的翻译键字符串。
+     * @param frame 成就框架；为 null 或空字符串时按 {@code task} 处理
+     * @return 翻译键
      * @since 0.6.0
      */
     public String getTranslationKey(String frame) {
