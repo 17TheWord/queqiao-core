@@ -18,6 +18,7 @@ import org.yaml.snakeyaml.Yaml;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -34,6 +35,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -278,10 +280,51 @@ class WebsocketManagerLifecycleTest {
             releaseSelector.countDown();
             assertTrue(awaitTerminated(stuck, 5_000L), "释放后 selector 线程应退出");
 
-            manager.stop(1000, "test cleanup");
-            assertNull(manager.getWsServer(), "再次 stop() 应能清掉保留的旧实例");
+            // 第二次 restart：这次能确认终止 → 清理引用并启动新 Server
+            manager.restart(serverConfig(port));
+            WsServer replacement = manager.getWsServer();
+            assertNotNull(replacement, "确认终止后应能启动新的 Server");
+            assertNotSame(stuck, replacement, "应替换为新的 Server 实例");
+            assertTrue(awaitPortAccepting(port), "新 Server 应成功监听同一端口");
         } finally {
             releaseSelector.countDown();
+            manager.stop(1000, "test cleanup");
+        }
+    }
+
+    @Test
+    @DisplayName("服务端级异常回调不清空引用：restart 会先确认终止再重建")
+    void serverFailureKeepsReferenceUntilConfirmedTerminated() throws Exception {
+        int port = findFreePort();
+        WebsocketManager manager = newManager(serverConfig(port));
+        try {
+            manager.start();
+            WsServer original = manager.getWsServer();
+            assertNotNull(original, "启动后应存在 Server");
+            assertTrue(awaitPortAccepting(port), "启动后端口应可连");
+
+            // 模拟服务端级异常回调（bind / selector 级错误）：回调不等于线程已退出
+            invokeServerFailure(manager, original);
+
+            assertSame(original, manager.getWsServer(), "异常回调不得提前释放 Server 引用");
+
+            // restart：先确认旧实例终止，再创建新实例；端口必须仍然可用（不能重复 bind 失败）
+            manager.restart(serverConfig(port));
+
+            WsServer replacement = manager.getWsServer();
+            assertNotNull(replacement, "确认终止后应创建新 Server");
+            assertNotSame(original, replacement, "应替换为新的 Server 实例");
+            assertTrue(original.isTerminated(), "旧实例应已终止");
+            assertTrue(awaitPortAccepting(port), "新 Server 应成功监听同一端口");
+
+            ProbeClient probe = new ProbeClient(port, "Server");
+            try {
+                probe.connect();
+                assertTrue(probe.awaitOpen(10_000L), "新 Server 应能完成真实握手");
+            } finally {
+                probe.closeQuietly();
+            }
+        } finally {
             manager.stop(1000, "test cleanup");
         }
     }
@@ -424,6 +467,15 @@ class WebsocketManagerLifecycleTest {
         Field field = WebsocketManager.class.getDeclaredField("wsServer");
         field.setAccessible(true);
         field.set(manager, server);
+    }
+
+    /**
+     * 触发 Manager 的服务端级异常回调（等价于 {@code onError(null, ...)}）
+     */
+    private static void invokeServerFailure(WebsocketManager manager, WsServer server) throws Exception {
+        Method method = WebsocketManager.class.getDeclaredMethod("onServerFailure", WsServer.class);
+        method.setAccessible(true);
+        method.invoke(manager, server);
     }
 
     private static void awaitUninterruptibly(CountDownLatch latch) {

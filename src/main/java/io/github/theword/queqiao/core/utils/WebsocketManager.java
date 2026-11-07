@@ -352,12 +352,21 @@ public class WebsocketManager {
     }
 
     /**
-     * 清除仍指向当前失败实例的引用。volatile identity check 可避免旧实例的迟到回调清掉新 Server。
+     * 服务端级异常回调（{@code onError(null, ...)}）
+     *
+     * <p><b>只记录，不清理引用</b>：Java-WebSocket 的服务端级异常回调（bind 失败、
+     * selector 级错误）<b>不等于</b> selector 线程已经退出，也不等于监听 Socket 已经释放。
+     * 若在这里清空引用，后续 restart 会误以为"没有旧 Server"，在端口仍被占用时 bind
+     * 一个新实例——结果是既没有服务，又失去了对旧实例的跟踪。
+     *
+     * <p>引用的清理只由 {@link #stopServer(List, String)} 在 {@code stopBounded()}
+     * 明确确认终止后进行。
+     *
+     * @param failedServer 报告异常的服务端实例
      */
     private void onServerFailure(WsServer failedServer) {
-        if (wsServer == failedServer) {
-            wsServer = null;
-        }
+        utils.debugLog("WebSocket Server 报告服务端级异常，保留实例引用等待停止确认：{}:{}",
+                failedServer.getAddress().getHostString(), failedServer.getPort());
     }
 
     /**
@@ -392,7 +401,10 @@ public class WebsocketManager {
                     WebsocketConstantMessage.Server.STOP_TIMEOUT, SERVER_STOP_JOIN_TIMEOUT_MILLIS));
             return false;
         }
-        wsServer = null;
+        // 身份检查：只清除本次停止的实例，避免迟到的停止流程误清掉新 Server
+        if (wsServer == current) {
+            wsServer = null;
+        }
         return true;
     }
 
@@ -433,7 +445,12 @@ public class WebsocketManager {
                 return messages;
             }
             if (started) {
-                // Client 已启动时保持幂等；如果先前 Server 绑定失败，则允许单独重试 Server。
+                // 上次 Server 启动失败时引用会被保留（异常回调不再清引用）：只有确认其
+                // selector 线程已退出（与 stopBounded 同一判据）才清理，然后允许重试绑定。
+                if (wsServer != null && wsServer.isTerminated()) {
+                    stopServer(messages, WebsocketConstantMessage.Server.STALE_SERVER_CLEANED);
+                }
+                // Client 已启动时保持幂等；Server 不存在（或刚被清理）时允许单独重试。
                 if (wsServer == null && this.config.get(ConfigKeys.WebSocket.ENABLE)) {
                     startServer(messages);
                 } else {

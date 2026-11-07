@@ -52,6 +52,14 @@ public class WebsocketConstantMessage {
         public static final String RESTART_SKIPPED =
                 "旧 Websocket Server 尚未确认停止，本次不启动新的 Server；请稍后重试。";
 
+        /**
+         * 启动阶段清理"已确认终止"的残留实例时使用的原因
+         *
+         * <p>服务端级异常回调不再清空引用，因此再次启动时需要先确认旧实例已终止，
+         * 才能清掉引用并重新绑定端口。
+         */
+        public static final String STALE_SERVER_CLEANED = "Websocket Server 实例已确认终止，清理残留引用";
+
         public static final String BROADCAST_MESSAGE = "向所有客户端广播消息：{}";
         public static final String RELOADING = "Websocket Server 正在重载";
         public static final String RELOADED = "Websocket Server 重载完毕";

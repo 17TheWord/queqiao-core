@@ -17,6 +17,10 @@ import java.lang.reflect.Field;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -259,6 +263,67 @@ class QueQiaoRuntimeRconReloadTest {
 
                 assertEquals("from-new", created.sendRconCommand("after-switch"), "切换完成后应使用新客户端");
             } finally {
+                executor.shutdownNow();
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("RCON 切换窗口内并发命令只看到完整状态，不会打到旧 Host")
+    void concurrentCommandsDuringSwitchSeeConsistentState() throws Exception {
+        try (FakeRconServer oldServer = new FakeRconServer("127.0.0.1", "from-old", false, false);
+             // 卡住认证：把"新配置 + 无客户端"的窗口稳定拉长，便于并发调用落进来
+             FakeRconServer newServer = new FakeRconServer("127.0.0.2", "from-new", true, false);
+             RuntimeConfigFixture fixture = new RuntimeConfigFixture("")) {
+
+            QueQiaoRuntime created = startRuntime(fixture, true, "127.0.0.1", oldServer.getPort());
+            assertEquals("from-old", created.sendRconCommand("warmup"));
+            assertEquals(1, oldServer.getCommandCount(), "前置命令应已到达旧 Server");
+
+            fixture.write(RuntimeConfigFixture.yaml(
+                    true, webSocketPort, true, "127.0.0.2", newServer.getPort(), RCON_PASSWORD));
+
+            int workers = 4;
+            int callsPerWorker = 50;
+            ExecutorService executor = Executors.newFixedThreadPool(workers + 1);
+            try {
+                Future<?> reloading = executor.submit(() -> created.reload());
+                assertTrue(newServer.awaitAuthenticationStarted(), "重载应已开始连接新 RCON");
+
+                CountDownLatch start = new CountDownLatch(1);
+                List<Future<List<String>>> calls = new ArrayList<>();
+                for (int worker = 0; worker < workers; worker++) {
+                    calls.add(executor.submit(() -> {
+                        List<String> unexpected = new ArrayList<>();
+                        start.await();
+                        for (int call = 0; call < callsPerWorker; call++) {
+                            try {
+                                unexpected.add("response=" + created.sendRconCommand("during-switch"));
+                            } catch (RconException e) {
+                                if (e.getKind() != RconException.Kind.DISCONNECTED) {
+                                    unexpected.add("kind=" + e.getKind());
+                                }
+                            }
+                        }
+                        return unexpected;
+                    }));
+                }
+                start.countDown();
+
+                for (Future<List<String>> call : calls) {
+                    assertEquals(
+                            Collections.emptyList(),
+                            call.get(10, TimeUnit.SECONDS),
+                            "切换窗口内只允许 DISCONNECTED，不得返回旧/新 Host 的响应");
+                }
+                assertEquals(1, oldServer.getCommandCount(), "切换窗口内不得有命令打到旧 Host");
+
+                newServer.releaseAuthentication();
+                reloading.get(10, TimeUnit.SECONDS);
+
+                assertEquals("from-new", created.sendRconCommand("after-switch"), "切换完成后应使用新客户端");
+            } finally {
+                newServer.releaseAuthentication();
                 executor.shutdownNow();
             }
         }

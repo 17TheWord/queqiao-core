@@ -235,6 +235,42 @@ class RconClientTest {
     }
 
     @Test
+    @DisplayName("中止失败时保留连接引用，stop 可重试，成功后才清理且保持幂等")
+    void stopRetriesAbortUntilReleased() throws RconException {
+        FakeConnection connection = new FakeConnection();
+        connection.abortFailuresRemaining = 1;
+        AtomicInteger opened = new AtomicInteger();
+        RconClient client = client((host, port, password) -> {
+            opened.incrementAndGet();
+            return connection;
+        });
+        client.connect();
+
+        // 第一次中止失败：引用必须保留，允许后续重试
+        client.stop();
+        assertEquals(1, connection.abortCount.get());
+        assertTrue(client.isConnected(), "未确认释放时不得丢弃连接引用");
+        assertEquals(
+                RconException.Kind.DISCONNECTED,
+                assertThrows(RconException.class, () -> client.sendCommand("list")).getKind(),
+                "客户端已停止，即使连接引用被保留也不得再执行命令");
+
+        // 第二次重试成功：此时才清理引用
+        client.stop();
+        assertEquals(2, connection.abortCount.get(), "第二次 stop 应再次执行中止");
+        assertFalse(client.isConnected(), "确认释放后才清理连接引用");
+
+        // 已释放后重复 stop 不产生副作用
+        client.stop();
+        assertEquals(2, connection.abortCount.get(), "已释放后不应再次中止");
+
+        // 停止是终态：不得重新建立连接
+        client.connect();
+        assertFalse(client.isConnected());
+        assertEquals(1, opened.get(), "停止后不得重新建立连接");
+    }
+
+    @Test
     @DisplayName("旧连接的失败清理不会清除已被替换的新连接")
     void failureCleanupDoesNotClearReplacementConnection() throws RconException {
         FakeConnection first = new FakeConnection();
@@ -384,6 +420,9 @@ class RconClientTest {
         /** abort() 时的回调（用于构造"清理旧连接时新连接已就位"的交错） */
         private volatile Runnable onAbort;
 
+        /** 剩余需要"失败"的 abort 次数（模拟 Socket 关闭失败） */
+        private volatile int abortFailuresRemaining;
+
         private FakeConnection() {
             this(null, null);
         }
@@ -427,8 +466,12 @@ class RconClientTest {
         }
 
         @Override
-        public void abort() {
+        public void abort() throws IOException {
             abortCount.incrementAndGet();
+            if (abortFailuresRemaining > 0) {
+                abortFailuresRemaining--;
+                throw new IOException("simulated abort failure");
+            }
             aborted.set(true);
             if (releaseCommand != null) {
                 releaseCommand.countDown();

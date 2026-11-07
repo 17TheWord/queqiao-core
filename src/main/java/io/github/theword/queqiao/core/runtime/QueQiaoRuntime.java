@@ -147,14 +147,48 @@ public final class QueQiaoRuntime {
     private volatile WebsocketManager websocketManager;
 
     /**
-     * 保护 {@link #rconClient} 引用的替换与读取
+     * 保护 {@link #rconState} 快照的发布与读取
      *
-     * <p>只承载"读引用 / 换引用"这类瞬时操作：建立连接、关闭连接等网络与 Socket 操作
+     * <p>只承载"读快照 / 换快照"这类瞬时操作：建立连接、关闭连接等网络与 Socket 操作
      * 一律在锁外执行，避免关闭旧客户端时被在途命令拖住。
      */
     private final Object rconLifecycleLock = new Object();
 
-    private volatile RconClient rconClient;
+    private volatile RconState rconState = RconState.DISABLED;
+
+    /**
+     * RCON 的不可变状态快照
+     *
+     * <p>"是否启用"与"当前客户端"必须<b>同时生效</b>：若用两个独立的 volatile 字段表达，
+     * 调用方就可能读到"新配置 + 旧客户端"的混合状态（reload 期间命令被发往旧 Host）。
+     * {@link #sendRconCommand(String)} 只读取一次快照，因此每次调用看到的都是完整状态。
+     *
+     * <p>实例一旦发布就不再修改；切换时构造新实例并整体替换。
+     */
+    private static final class RconState {
+
+        /** 未启用（也是关闭后的终态） */
+        private static final RconState DISABLED = new RconState(false, null);
+
+        private final boolean enabled;
+        private final RconClient client;
+
+        private RconState(boolean enabled, RconClient client) {
+            this.enabled = enabled;
+            this.client = client;
+        }
+
+        private boolean enabled() {
+            return enabled;
+        }
+
+        /**
+         * @return 当前生效的客户端；{@code null} 表示"已启用但暂无可用连接"
+         */
+        private RconClient client() {
+            return client;
+        }
+    }
 
     /**
      * RCON 切换代次
@@ -728,8 +762,8 @@ public final class QueQiaoRuntime {
 
         RconClient client;
         synchronized (rconLifecycleLock) {
-            client = rconClient;
-            rconClient = null;
+            client = rconState.client();
+            rconState = RconState.DISABLED;
             // 递增代次：任何仍在进行的切换都不得再把客户端发布回来
             rconGeneration++;
         }
@@ -800,11 +834,15 @@ public final class QueQiaoRuntime {
      * @return true 表示配置启用了 RCON（已尝试发布新客户端）；false 表示已禁用
      */
     private boolean switchRconClient(ConfigSnapshot snapshot) {
+        boolean enabled = snapshot.valueOf(ConfigKeys.Rcon.ENABLE);
+
         RconClient previous;
         int generation;
         synchronized (rconLifecycleLock) {
-            previous = rconClient;
-            rconClient = null;
+            previous = rconState.client();
+            // 一次性发布"新配置 + 无客户端"：切换期间命令一律得到 DISCONNECTED，
+            // 绝不会出现"新配置 + 旧客户端"的组合
+            rconState = enabled ? new RconState(true, null) : RconState.DISABLED;
             generation = ++rconGeneration;
         }
 
@@ -813,7 +851,7 @@ public final class QueQiaoRuntime {
             previous.stop();
         }
 
-        if (!snapshot.valueOf(ConfigKeys.Rcon.ENABLE)) {
+        if (!enabled) {
             return false;
         }
 
@@ -825,7 +863,8 @@ public final class QueQiaoRuntime {
         synchronized (rconLifecycleLock) {
             published = generation == rconGeneration;
             if (published) {
-                rconClient = replacement;
+                // 一次性发布完整状态：启用标志与客户端同时生效
+                rconState = new RconState(true, replacement);
             }
         }
         if (!published) {
@@ -844,10 +883,12 @@ public final class QueQiaoRuntime {
     }
 
     public String sendRconCommand(String command) throws RconException {
-        if (!config.get(ConfigKeys.Rcon.ENABLE)) {
+        // 只读一次快照：启用标志与客户端必须来自同一个状态，避免读到"新配置 + 旧客户端"
+        RconState state = rconState;
+        if (!state.enabled()) {
             throw RconException.disabled();
         }
-        RconClient client = rconClient;
+        RconClient client = state.client();
         if (client == null) {
             throw RconException.disconnected();
         }

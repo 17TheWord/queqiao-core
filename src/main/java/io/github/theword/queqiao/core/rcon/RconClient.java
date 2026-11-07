@@ -72,8 +72,8 @@ public class RconClient {
     /** 当前连接；由 {@link #lifecycleLock} 保护写，volatile 保证读可见性。 */
     private volatile Connection connection;
 
-    /** 是否已停止（终态）。由 {@link #lifecycleLock} 保护。 */
-    private boolean stopped;
+    /** 是否已停止（终态：不再接受新的连接与命令）。写操作由 {@link #lifecycleLock} 保护，volatile 保证读可见性。 */
+    private volatile boolean stopped;
 
     /** 是否正在建立连接。由 {@link #lifecycleLock} 保护。 */
     private boolean connecting;
@@ -238,6 +238,11 @@ public class RconClient {
 
         commandLock.lock();
         try {
+            // stopped 与 connection 是两个概念：中止失败时连接引用会被保留，
+            // 但客户端已经停止，命令一律得到明确的断开错误，不会复用该连接
+            if (stopped) {
+                throw RconException.clientDisconnected();
+            }
             Connection current = connection;
             if (current == null) {
                 throw RconException.clientDisconnected();
@@ -256,7 +261,7 @@ public class RconClient {
     }
 
     /**
-     * 关闭连接（幂等）
+     * 关闭连接（幂等，可重试）
      *
      * <p>目标是<b>快速中止</b>，不是优雅等待：
      * <ul>
@@ -266,34 +271,53 @@ public class RconClient {
      *     <li>不在持有 {@link #lifecycleLock} 时关闭 Socket。</li>
      * </ul>
      *
+     * <p><b>"已停止"与"已释放"是两个概念</b>：
+     * <ul>
+     *     <li>{@code stopped} 表示<b>不再接受</b>新的连接与命令（终态）；</li>
+     *     <li>{@code connection} 只有在 {@code abort()} <b>成功返回后</b>才被清除。</li>
+     * </ul>
+     * 因此中止失败时连接引用会被保留，重复调用本方法会再次尝试清理，
+     * 而不是因为"已经停止过"就丢掉尚未确认释放的连接。
+     *
      * <p>在途命令可能因 Socket 被关闭而失败，这是预期行为；命令不会自动重放
      * （RCON 命令可能有副作用，客户端无法判断服务器是否已执行）。
      */
     public void stop() {
-        Connection previous;
+        Connection target;
         synchronized (lifecycleLock) {
-            if (stopped) {
-                return;
-            }
+            // 先禁止新的连接与命令；但不在确认释放前摘除引用
             stopped = true;
-            previous = connection;
-            connection = null;
+            target = connection;
         }
 
-        if (previous == null) {
+        if (target == null) {
             return;
         }
 
         logger.info("正在关闭 Rcon 客户端...");
         try {
-            previous.abort();
-            logger.info("Rcon 客户端资源已释放");
+            target.abort();
         } catch (Exception e) {
-            logger.warn("Rcon 连接关闭失败：{}", e.getMessage(), e);
+            // 中止失败：保留引用，后续 stop() 会再次尝试（不做连接恢复，只是不丢引用）
+            logger.warn("Rcon 连接关闭失败，保留连接引用以便重试：{}", e.getMessage(), e);
+            return;
         }
+
+        synchronized (lifecycleLock) {
+            // 身份检查：只清除本次中止的连接
+            if (connection == target) {
+                connection = null;
+            }
+        }
+        logger.info("Rcon 客户端资源已释放");
     }
 
     /**
+     * 当前是否持有连接
+     *
+     * <p>反映的是<b>连接引用是否存在</b>：{@link #stop()} 中止失败时引用会被保留以便重试，
+     * 此时本方法仍返回 {@code true}，但 {@link #sendCommand(String)} 已经一律失败。
+     *
      * @return 当前是否持有连接
      */
     public boolean isConnected() {

@@ -279,12 +279,17 @@ public abstract class CommandExecutionContext<NCS> {
 
 ### 变更
 
+- **RCON 的"启用状态"与"客户端"改为原子切换**：`sendRconCommand()` 只读取一次不可变状态快照，
+  因此不会出现"新配置 + 旧客户端"的混合状态；切换窗口内命令一律返回 503（`DISCONNECTED`）。
 - **`HandleProtocolMessage#handleWebsocketJson` / `#handleHttpJson` 可能返回 `null`**：
   分发门控关闭期间返回 `null`（表示"不回执"）。直接调用这两个入口的代码需要判空，
   不要把它当成合法 JSON 继续解析。
 - **`RconClient` 的关闭语义改为"快速中止"**：`stop()` 不再等待在途命令结束，且停止后的实例
   视为已废弃——不再接受 `connect()` 与 `sendCommand()`，需要重新连接时由 `QueQiaoRuntime`
   创建新实例。这样既消除了死锁，也避免"同一实例在停止与重连之间来回切换"引入新的竞态。
+  `stop()` 现在**可重试**：底层 `abort()` 失败时保留连接引用，重复调用会再次尝试清理，
+  只有确认释放后才清除引用；`isConnected()` 反映"是否仍持有连接引用"，
+  因此中止失败后仍可能返回 `true`，但命令已经一律失败。
 - **正常启动不再写 `config.yml`**：只有文件**缺失或为空**时才会生成一份带注释的完整配置；
   文件正常时**只读不写**——缺失字段在**内存**中取 Schema 默认值，用户文件一个字都不动。
   真正需要覆盖用户文件的场景（未来的配置迁移、显式"同步配置"命令）由
@@ -401,6 +406,9 @@ public abstract class CommandExecutionContext<NCS> {
   不再使用 `stop(0, ...)`。selector 线程若卡在缓冲区等待（解码线程被同步回调占满时会发生）
   或其它阻塞点，最多等待 1 秒后会被中断，从而走到 `doServerShutdown()` 关闭监听通道；
   仍未退出时会明确记录"未能确认停止"，不假装已经停干净。
+  服务端级异常回调（`onError(null, ...)`）**不再提前清空实例引用**：该回调不代表 selector
+  线程已退出、也不代表端口已释放，提前清引用会让后续 restart 在端口仍被占用时重复 bind，
+  既没有服务又丢失了对旧实例的跟踪。引用只在确认终止后清理。
   **升级提示（Reload 行为）**：
   - Reload 期间 WebSocket 会**暂停接入**（Client 与 Server 都停止），完成后按新配置恢复；
     已建立的连接会被正常关闭，由客户端按既有重连策略重连。
