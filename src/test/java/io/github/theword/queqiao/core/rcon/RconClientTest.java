@@ -141,8 +141,46 @@ class RconClientTest {
         }
     }
 
+    @Test
+    @DisplayName("Host / 端口 / 密码按构造参数原样传给连接工厂")
+    void passesHostPortAndPasswordToFactory() {
+        AtomicReference<String> host = new AtomicReference<>();
+        AtomicReference<Integer> port = new AtomicReference<>();
+        AtomicReference<String> password = new AtomicReference<>();
+        RconClient client = new RconClient(LOGGER, "mc.example.com", 25566, "pw", (h, p, s) -> {
+            host.set(h);
+            port.set(p);
+            password.set(s);
+            return new FakeConnection();
+        });
+
+        client.connect();
+
+        assertEquals("mc.example.com", host.get(), "不应把 host 硬编码为 localhost");
+        assertEquals(Integer.valueOf(25566), port.get());
+        assertEquals("pw", password.get());
+    }
+
+    @Test
+    @DisplayName("旧三参数构造器保留，并使用 127.0.0.1 作为默认 Host")
+    void legacyConstructorKeepsDefaultHost() {
+        assertEquals("127.0.0.1", RconClient.DEFAULT_HOST, "默认地址必须是 IPv4 回环地址");
+
+        // 旧构造器仍然可用（源码兼容），且不会因为缺少 host 参数而编译失败
+        RconClient legacy = new RconClient(LOGGER, 25575, "pw");
+        assertFalse(legacy.isConnected(), "未 connect 前不应报告已连接");
+    }
+
+    @Test
+    @DisplayName("空白 Host 在构造阶段即被拒绝")
+    void blankHostIsRejected() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new RconClient(LOGGER, "   ", 25575, "pw", (h, p, s) -> new FakeConnection()));
+    }
+
     private static RconClient client(RconClient.ConnectionFactory factory) {
-        return new RconClient(LOGGER, 25575, "test-password", factory);
+        return new RconClient(LOGGER, RconClient.DEFAULT_HOST, 25575, "test-password", factory);
     }
 
     private static final class FakeConnection implements RconClient.Connection {

@@ -58,6 +58,19 @@ class ConfigValidatorsTest {
     }
 
     @Test
+    @DisplayName("nonBlank：空串与纯空白都报错，null 交给 codec 决定")
+    void nonBlank() {
+        ConfigValidator<String> validator = ConfigValidators.nonBlank();
+
+        assertDoesNotThrow(() -> validator.validate("a.host", "127.0.0.1"));
+        assertDoesNotThrow(() -> validator.validate("a.host", "::1"));
+        assertDoesNotThrow(() -> validator.validate("a.host", null));
+        assertThrows(ConfigValidationException.class, () -> validator.validate("a.host", ""));
+        assertThrows(ConfigValidationException.class, () -> validator.validate("a.host", "   "));
+        assertThrows(ConfigValidationException.class, () -> validator.validate("a.host", "\t\n"));
+    }
+
+    @Test
     @DisplayName("oneOf：取值必须在集合内")
     void oneOf() {
         ConfigValidator<String> validator = ConfigValidators.oneOf("a", "b");

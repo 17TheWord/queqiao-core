@@ -1,6 +1,7 @@
 package io.github.theword.queqiao.core.config.io;
 
 import io.github.theword.queqiao.core.config.ConfigKeys;
+import io.github.theword.queqiao.core.config.exception.ConfigValidationException;
 import io.github.theword.queqiao.core.config.schema.ConfigRegistry;
 import io.github.theword.queqiao.core.config.Config;
 import org.junit.jupiter.api.DisplayName;
@@ -14,6 +15,7 @@ import java.nio.file.Path;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -107,5 +109,91 @@ class ConfigIntegrationTest {
 
         assertEquals(before, runtime.describeEntries().toString(), "加载失败必须保持原状态");
         assertEquals(Integer.valueOf(19132), runtime.get(ConfigKeys.WebSocket.PORT));
+    }
+
+    // ------------------------------------------------------------------
+    // rcon.host
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("rcon.host 缺失时使用默认 IPv4 回环地址，显式配置时按用户值读取")
+    void rconHostFallsBackToDefaultAndReadsUserValue(@TempDir Path tempDir) throws IOException {
+        // 上面 CONFIG_YAML 的 rcon 区块没有 host —— 即"旧配置文件"的形态
+        Path configPath = tempDir.resolve("config.yml");
+        Files.write(configPath, CONFIG_YAML.getBytes(StandardCharsets.UTF_8));
+
+        ConfigRegistry registry = new ConfigRegistry();
+        ConfigKeys.registerAll(registry);
+        Config runtime = new Config(registry);
+        ConfigLoader loader = new ConfigLoader(registry, runtime);
+
+        ConfigFileReader.Result read = ConfigFileReader.read(configPath);
+        loader.load(read.getState(), read.getMap());
+
+        assertEquals("127.0.0.1", runtime.get(ConfigKeys.Rcon.HOST), "缺失时应取 Schema 默认值");
+        assertTrue(runtime.isDefault(ConfigKeys.Rcon.HOST), "缺失字段来源应为 DEFAULT");
+
+        // 显式配置自定义地址（此处用域名，顺带验证不做 IPv4 限制）
+        Files.write(
+                configPath,
+                CONFIG_YAML.replace("rcon:\n", "rcon:\n  host: \"mc.example.com\"\n")
+                        .getBytes(StandardCharsets.UTF_8));
+        ConfigFileReader.Result custom = ConfigFileReader.read(configPath);
+        loader.load(custom.getState(), custom.getMap());
+
+        assertEquals("mc.example.com", runtime.get(ConfigKeys.Rcon.HOST));
+        assertTrue(runtime.contains(ConfigKeys.Rcon.HOST), "显式配置来源应为 USER");
+    }
+
+    @Test
+    @DisplayName("rcon.host 支持 IPv4 / IPv6 字面地址，不被格式限制")
+    void rconHostAcceptsIpv4AndIpv6Literals(@TempDir Path tempDir) throws IOException {
+        Path configPath = tempDir.resolve("config.yml");
+
+        ConfigRegistry registry = new ConfigRegistry();
+        ConfigKeys.registerAll(registry);
+        Config runtime = new Config(registry);
+        ConfigLoader loader = new ConfigLoader(registry, runtime);
+
+        for (String host : new String[] {"127.0.0.1", "::1", "0:0:0:0:0:0:0:1", "localhost", "mc.example.com"}) {
+            Files.write(
+                    configPath,
+                    CONFIG_YAML.replace("rcon:\n", "rcon:\n  host: \"" + host + "\"\n")
+                            .getBytes(StandardCharsets.UTF_8));
+            ConfigFileReader.Result read = ConfigFileReader.read(configPath);
+            loader.load(read.getState(), read.getMap());
+            assertEquals(host, runtime.get(ConfigKeys.Rcon.HOST), "不应限制 host 的格式：" + host);
+        }
+    }
+
+    @Test
+    @DisplayName("rcon.host 为空白时按配置校验规则明确拒绝，且不污染原状态")
+    void blankRconHostIsRejected(@TempDir Path tempDir) throws IOException {
+        Path configPath = tempDir.resolve("config.yml");
+
+        ConfigRegistry registry = new ConfigRegistry();
+        ConfigKeys.registerAll(registry);
+        Config runtime = new Config(registry);
+        ConfigLoader loader = new ConfigLoader(registry, runtime);
+
+        Files.write(configPath, CONFIG_YAML.getBytes(StandardCharsets.UTF_8));
+        ConfigFileReader.Result valid = ConfigFileReader.read(configPath);
+        loader.load(valid.getState(), valid.getMap());
+        String before = runtime.describeEntries().toString();
+
+        for (String blank : new String[] {"\"\"", "\"   \""}) {
+            Files.write(
+                    configPath,
+                    CONFIG_YAML.replace("rcon:\n", "rcon:\n  host: " + blank + "\n")
+                            .getBytes(StandardCharsets.UTF_8));
+            ConfigFileReader.Result broken = ConfigFileReader.read(configPath);
+
+            ConfigValidationException error = assertThrows(
+                    ConfigValidationException.class, () -> loader.load(broken.getState(), broken.getMap()));
+            assertTrue(
+                    error.getMessage().contains("rcon.host"),
+                    "错误信息应指明字段路径，实际=" + error.getMessage());
+            assertEquals(before, runtime.describeEntries().toString(), "校验失败必须保持原状态");
+        }
     }
 }

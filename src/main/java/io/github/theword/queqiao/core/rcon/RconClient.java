@@ -19,10 +19,19 @@ public class RconClient {
     /** TCP 连接超时及 Socket 单次读等待超时；这是空闲超时，不是整个命令的总耗时上限。 */
     static final int SOCKET_TIMEOUT_MILLIS = 10_000;
 
+    /**
+     * 默认 Rcon 服务器地址
+     *
+     * <p>使用 IPv4 回环地址而不是 {@code localhost}：部分系统会把 {@code localhost}
+     * 优先解析为 {@code ::1}，而 Minecraft 的 RCON 通常只监听 IPv4 回环地址。
+     */
+    static final String DEFAULT_HOST = "127.0.0.1";
+
     /** Minecraft RCON EXEC_COMMAND 数据包可承载的最大命令字节数。 */
     private static final int MAX_COMMAND_BYTES = 1446;
 
     private final Logger logger;
+    private final String host;
     private final int port;
     private final String password;
     private final ConnectionFactory connectionFactory;
@@ -30,18 +39,44 @@ public class RconClient {
     /** 仅由本实例同步方法访问。 */
     private Connection connection;
 
+    /**
+     * 使用默认地址（{@link #DEFAULT_HOST}）构造客户端
+     *
+     * @param logger   日志实现
+     * @param port     Rcon 端口
+     * @param password Rcon 密码
+     */
     public RconClient(Logger logger, int port, String password) {
-        this(logger, port, password, RconClient::openConnection);
+        this(logger, DEFAULT_HOST, port, password);
     }
 
-    RconClient(Logger logger, int port, String password, ConnectionFactory connectionFactory) {
+    /**
+     * 构造客户端
+     *
+     * <p>Host 在构造时确定，实例内部不提供 Setter —— 配置变化时由 Runtime 创建新的
+     * {@code RconClient} 并替换引用，避免"连接已建立却悄悄换了目标地址"。
+     *
+     * @param logger   日志实现
+     * @param host     Rcon 服务器地址（主机名 / IPv4 / IPv6 / 域名）
+     * @param port     Rcon 端口
+     * @param password Rcon 密码
+     */
+    public RconClient(Logger logger, String host, int port, String password) {
+        this(logger, host, port, password, RconClient::openConnection);
+    }
+
+    RconClient(Logger logger, String host, int port, String password, ConnectionFactory connectionFactory) {
         if (logger == null) {
             throw new IllegalArgumentException("logger 不能为 null");
+        }
+        if (host == null || host.trim().isEmpty()) {
+            throw new IllegalArgumentException("host 不能为空白");
         }
         if (connectionFactory == null) {
             throw new IllegalArgumentException("connectionFactory 不能为 null");
         }
         this.logger = logger;
+        this.host = host;
         this.port = port;
         this.password = password == null ? "" : password;
         this.connectionFactory = connectionFactory;
@@ -83,11 +118,11 @@ public class RconClient {
             return;
         }
         try {
-            connection = connectionFactory.connect("localhost", port, password);
+            connection = connectionFactory.connect(host, port, password);
             if (connection == null) {
                 throw new IllegalStateException("RCON connection factory 返回了 null");
             }
-            logger.info("Rcon 连接成功！[port: {}]", port);
+            logger.info("Rcon 连接成功！[host: {}, port: {}]", host, port);
         } catch (AuthenticationException e) {
             logger.error("Rcon 认证失败，请检查配置项是否正确");
         } catch (IOException e) {

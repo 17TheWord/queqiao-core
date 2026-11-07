@@ -197,6 +197,13 @@ public abstract class CommandExecutionContext<NCS> {
 
 ### 新增
 
+- **`rcon.host` 配置项**：指定 RCON 服务地址，默认 `127.0.0.1`。
+  - 支持主机名、IPv4、IPv6 字面地址与域名，不做格式限制；空白值在校验阶段即被拒绝。
+  - 默认值刻意使用 IPv4 回环地址而不是 `localhost`——部分操作系统会把 `localhost`
+    优先解析为 `::1`，而 Minecraft 的 RCON 通常只监听 IPv4 回环地址，导致连接被拒绝。
+  - 旧配置文件没有该字段时**自动使用默认值**，无需删除或手工迁移配置。
+  - `RconClient` 新增 `(Logger, String host, int port, String password)` 构造器；
+    原三参数构造器保留，等价于传入 `127.0.0.1`（源码与二进制兼容）。
 - **Schema 驱动的配置系统**（单文件 `config.yml`）：
   - `ConfigKeys` —— 全部配置项的**唯一声明处**（路径 / 类型 / 默认值 / 取值范围 / 注释）；
   - `ConfigKey` / `ConfigRegistry` / `ConfigTree` / `ConfigNode` / `ConfigSectionNode` —— Schema 模型与节点树；

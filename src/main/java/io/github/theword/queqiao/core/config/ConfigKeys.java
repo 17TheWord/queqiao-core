@@ -195,6 +195,25 @@ public final class ConfigKeys {
                 .comment("是否启用")
                 .build();
 
+        /**
+         * Rcon 服务器地址
+         *
+         * <p>默认值刻意使用 {@code 127.0.0.1} 而不是 {@code localhost}：
+         * 部分操作系统会把 {@code localhost} 优先解析为 IPv6 回环地址 {@code ::1}，
+         * 而 Minecraft 的 RCON 通常只监听 IPv4 回环地址，导致连接被拒绝。
+         *
+         * <p>取值不做格式限制——主机名、IPv4、IPv6 字面地址与域名都应可用，
+         * 是否可解析由建立连接时的系统解析器决定。
+         */
+        public static final ConfigKey<String> HOST =
+                ConfigKey.builder("rcon.host", StringCodec.INSTANCE)
+                        .defaultValue("127.0.0.1")
+                        .validator(ConfigValidators.nonBlank())
+                        .comment(
+                                "Rcon 服务器地址（主机名 / IPv4 / IPv6 / 域名）",
+                                "默认使用 IPv4 回环地址，避免 localhost 被解析为 ::1 而 RCON 只监听 IPv4")
+                        .build();
+
         public static final ConfigKey<Integer> PORT = ConfigKey.builder("rcon.port", IntegerCodec.INSTANCE)
                 .defaultValue(25575)
                 .validator(ConfigValidators.range(1, 65535))
@@ -292,6 +311,7 @@ public final class ConfigKeys {
                 WebSocketClient.RECONNECT_MAX_TIMES,
                 WebSocketClient.URL_LIST,
                 Rcon.ENABLE,
+                Rcon.HOST,
                 Rcon.PORT,
                 Rcon.PASSWORD,
                 Status.REFRESH_INTERVAL_SECONDS,

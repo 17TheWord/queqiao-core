@@ -727,6 +727,7 @@ public final class QueQiaoRuntime {
     private RconClient createRconClient(ConfigSnapshot source) {
         return new RconClient(
                 logger,
+                source.valueOf(ConfigKeys.Rcon.HOST),
                 source.valueOf(ConfigKeys.Rcon.PORT),
                 source.valueOf(ConfigKeys.Rcon.PASSWORD));
     }
