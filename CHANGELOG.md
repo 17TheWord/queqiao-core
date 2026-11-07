@@ -199,7 +199,14 @@ public abstract class CommandExecutionContext<NCS> {
 
 - **`WebsocketManager#suspend()`**：临时停止所有 endpoint 但**保留**共享重连调度器，
   供 reload 在切换 RCON 期间暂停接入；幂等，且不设置永久销毁标记（那仍只属于 `stop()`）。
-  无法确认 WebSocket Server 已停止接入时抛 `IllegalStateException`，调用方应中止后续切换。
+  停止是**有界**的：最多等待 selector 线程 1 秒，超时则中断该线程，绝不会无限等待；
+  若仍未确认退出，会以进度消息与 WARN 日志明确告知，而不是假装已经停干净。
+- **`WsServer#stopBounded(int, String)` / `WsServer#isTerminated()`**：
+  把"有界停止 + 中断兜底"封装在服务端自身，并能如实回答"selector 线程是否已退出"
+  （监听通道的释放与它绑定），不会在启动窗口或超时场景里误报"已终止"。
+  背景：Java-WebSocket 1.5.3 的 `stop(timeout)` 内部是 `selectorthread.join(timeout)`
+  （传 0 等于无限等待），而且它**不关闭** `ServerSocketChannel`——通道是在 selector
+  线程退出时的 `doServerShutdown()` 里关闭的，线程卡住时端口会一直可连。
 - **`rcon.host` 配置项**：指定 RCON 服务地址，默认 `127.0.0.1`。
   - 支持主机名、IPv4、IPv6 字面地址与域名，不做格式限制；空白值在校验阶段即被拒绝。
   - 默认值刻意使用 IPv4 回环地址而不是 `localhost`——部分操作系统会把 `localhost`
@@ -374,12 +381,22 @@ public abstract class CommandExecutionContext<NCS> {
 ### 修复
 
 - **Reload 期间 RCON 切换与 WebSocket 请求交错**：`reload()` 现在按
-  "暂停 WebSocket 接入 → 加载配置 → 切换 RCON → 更新其它组件 → 按新配置恢复"执行，
+  "暂停 WebSocket 接入 → 加载配置 → **切换 RCON** → 更新其它组件 → 按新配置恢复"执行，
   切换过程中不会再有新请求进入 Runtime；旧 RCON 的关闭也不需要等待在途命令。
+  RCON 切换紧跟配置加载，保证 WebSocket 恢复时使用的客户端已与当前配置一致。
   Endpoint 的恢复位于 `finally`：配置非法、RCON 连不上或其它步骤失败都不会让
   WebSocket 永久停服，恢复本身的异常会与原始异常一并保留（作为 suppressed）。
-  **升级提示**：reload 期间 WebSocket 会短暂停止接入（通常为毫秒级），
-  已建立连接会被正常关闭并由客户端按既有策略重连。
+- **WebSocket Server 停止可能无限等待**：停止路径改用有界等待 + 中断兜底，
+  不再使用 `stop(0, ...)`。selector 线程若卡在缓冲区等待（解码线程被同步回调占满时会发生）
+  或其它阻塞点，最多等待 1 秒后会被中断，从而走到 `doServerShutdown()` 关闭监听通道；
+  仍未退出时会明确记录"未能确认停止"，不假装已经停干净。
+  **升级提示（Reload 行为）**：
+  - Reload 期间 WebSocket 会**暂停接入**（Client 与 Server 都停止），完成后按新配置恢复；
+    已建立的连接会被正常关闭，由客户端按既有重连策略重连。
+  - RCON 连接的建立是**同步网络操作**，耗时取决于目标地址解析、TCP 连接与认证，
+    因此 Reload 的总耗时可能明显长于"只读一遍配置"，没有固定的时间上限承诺。
+  - 旧 RCON 连接上的**在途请求可能因连接被中止而失败**（`COMMAND_FAILED` / HTTP 500）。
+  - 这些失败的命令**不会自动重放**——RCON 命令可能有副作用，客户端无法判断服务器是否已执行。
 - **启动时 WebSocket 先于 RCON 就绪**：`doStart()` 改为先初始化 RCON 再开放 WebSocket，
   消除"WebSocket 已经在接收请求、而 RCON 还没连上"的启动窗口。
   RCON 连接失败仍然不会阻断启动，相关请求得到明确的不可用响应。

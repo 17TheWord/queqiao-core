@@ -34,6 +34,15 @@ public class WebsocketConstantMessage {
     public static class Server {
         public static final String ERROR_ON_STOPPING = "Websocket Server 正在启动时出现异常。";
 
+        /**
+         * 停止超时提示
+         *
+         * <p>参数：等待上限（毫秒）。语义刻意区分"已停止"与"未能确认停止"：
+         * 超时后会中断 selector 线程，但线程若仍未退出，监听端口可能尚未释放。
+         */
+        public static final String STOP_TIMEOUT =
+                "Websocket Server 未在 {} ms 内确认停止，已中断 selector 线程；若其仍未退出，端口可能仍在监听。";
+
         public static final String BROADCAST_MESSAGE = "向所有客户端广播消息：{}";
         public static final String RELOADING = "Websocket Server 正在重载";
         public static final String RELOADED = "Websocket Server 重载完毕";

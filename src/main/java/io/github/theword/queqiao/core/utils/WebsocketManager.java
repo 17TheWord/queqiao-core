@@ -63,6 +63,20 @@ public class WebsocketManager {
      */
     private static final String RECONNECT_THREAD_NAME_PREFIX = "QueQiao-WebSocket-Reconnect-";
 
+    /**
+     * 停止 WebSocket Server 时等待 selector 线程退出的上限（毫秒）
+     *
+     * <p>Java-WebSocket 的 {@code stop(timeout, closeMessage)} 内部是
+     * {@code selectorthread.join(timeout)}，<b>传 0 等于无限等待</b>。而 selector 线程
+     * 可能阻塞在缓冲区等待或同步回调里，此时"等它退出"会变成死锁：主线程等 selector，
+     * selector 等主线程。
+     *
+     * <p>正常关闭时该线程会在 {@code isclosed} 后的 5 次 5ms 轮询内退出（约 25ms），
+     * 1 秒是它的 40 倍，足够吸收调度抖动；超时后由 {@link WsServer#stopBounded(int, String)}
+     * 补一次中断，避免线程卡住导致端口一直处于监听状态。
+     */
+    private static final int SERVER_STOP_JOIN_TIMEOUT_MILLIS = 1_000;
+
     private final Object lifecycleLock = new Object();
     private final List<WsClient> wsClientList;
     private volatile WsServer wsServer;
@@ -349,27 +363,37 @@ public class WebsocketManager {
     /**
      * 停止 WebSocket Server
      *
+     * <p><b>有界等待 + 中断兜底</b>：绝不使用 {@code stop(0, ...)}（等于无限等待 selector
+     * 线程），也不假设 {@code stop(timeout)} 已经关闭监听端口——ServerSocketChannel 是在
+     * selector 线程退出时才关闭的。具体策略见 {@link WsServer#stopBounded(int, String)}。
+     *
+     * <p>超时后<b>不会</b>假装 Server 已完全终止：引用照常清空（不能复用该实例），
+     * 但返回值与日志会明确区分"已终止"与"未能确认终止"。
+     *
      * @param messages 进度消息收集器
      * @param reason   关闭原因
-     * @return true 表示"没有 Server"或"已确认停止"；false 表示停止过程被中断，无法确认已停止接入
+     * @return true 表示没有 Server，或已确认 selector 线程退出（端口已释放）；
+     *         false 表示已中断但仍未确认线程退出，端口可能仍在监听
      */
     private boolean stopServer(List<String> messages, String reason) {
         WsServer current = wsServer;
         if (current == null) {
             return true;
         }
-        boolean confirmed = false;
+        boolean terminated;
         try {
-            current.stop(0, reason);
+            terminated = current.stopBounded(SERVER_STOP_JOIN_TIMEOUT_MILLIS, reason);
             messages.add(reason);
-            confirmed = true;
-        } catch (InterruptedException e) {
-            messages.add(WebsocketConstantMessage.Server.ERROR_ON_STOPPING);
-            utils.debugLog(e.getMessage());
         } finally {
             wsServer = null;
         }
-        return confirmed;
+        if (!terminated) {
+            logger.warn(
+                    "WebSocket Server 未在 {} ms 内确认停止，selector 线程可能仍阻塞在协议回调中；"
+                            + "已发出中断，但端口可能仍在监听",
+                    SERVER_STOP_JOIN_TIMEOUT_MILLIS);
+        }
+        return terminated;
     }
 
     private void restartServer(List<String> messages) {
@@ -454,12 +478,16 @@ public class WebsocketManager {
      * <p>暂停期间不会有新的协议请求进入 Runtime。调用方必须在流程结束后调用
      * {@link #restart(Config)} 恢复（即使中间步骤失败），否则 WebSocket 会一直停服。
      *
+     * <p><b>停止是"有界"的</b>：最多等待 {@link #SERVER_STOP_JOIN_TIMEOUT_MILLIS} 毫秒，
+     * 超时后由 {@link WsServer#stopBounded(int, String)} 中断 selector 线程。
+     * 超时不会抛出异常——调用方应继续执行后续步骤（例如强制中止 RCON），
+     * 正是那些步骤能让阻塞在协议回调里的工作线程退出。超时信息会作为一条进度消息返回，
+     * 不会静默吞掉。
+     *
      * <p>本方法<b>不会</b>设置 {@code destroyed} 标记，也不关闭 {@code reconnectScheduler}——
      * 那两件事只属于 {@link #stop(int, String)} 这条永久销毁路径。
      *
      * @return 本应展示给用户的进度消息，按发生顺序排列
-     * @throws IllegalStateException 无法确认 WebSocket Server 已停止接入时
-     *                               （调用方应中止后续切换，而不是假装暂停完成）
      */
     public List<String> suspend() {
         synchronized (lifecycleLock) {
@@ -470,7 +498,10 @@ public class WebsocketManager {
             }
             stopClients(CLOSE_CODE_NORMAL, WebsocketConstantMessage.CLOSE_BY_RELOAD, messages);
             if (!stopServer(messages, WebsocketConstantMessage.Server.RELOADING)) {
-                throw new IllegalStateException("WebSocket Server 未能确认停止，已中止后续切换");
+                // 已中断 selector 线程但仍未确认退出：继续后续步骤（强制中止 RCON 能让阻塞的
+                // 回调退出），同时以进度消息明确告知，不假装已经停干净。
+                messages.add(Tool.format(
+                        WebsocketConstantMessage.Server.STOP_TIMEOUT, SERVER_STOP_JOIN_TIMEOUT_MILLIS));
             }
             started = false;
             return messages;

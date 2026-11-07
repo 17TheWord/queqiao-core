@@ -587,9 +587,10 @@ public final class QueQiaoRuntime {
      * <p>只允许对 {@link RuntimeState#RUNNING} 的 Runtime 调用，其余状态抛
      * {@link IllegalStateException}。
      *
-     * <p><b>时序</b>：先暂停 WebSocket 接入 → 加载配置 → 切换 RCON → 更新其它依赖配置的组件 →
-     * 最后按（新）配置恢复 WebSocket。这样 RCON 新旧连接不会在"请求仍在流入"的窗口内交错，
-     * 关闭旧 RCON 也不需要等待正在执行的命令。
+     * <p><b>时序</b>：先暂停 WebSocket 接入 → 加载配置 → <b>切换 RCON</b> →
+     * 更新其它依赖配置的组件 → 最后按（新）配置恢复 WebSocket。
+     * RCON 切换紧跟配置加载，保证 WebSocket 恢复时使用的 RCON 客户端已与当前配置一致；
+     * 这样新旧连接也不会在"请求仍在流入"的窗口内交错，关闭旧 RCON 更不需要等待在途命令。
      *
      * <p><b>恢复必须发生</b>：Endpoint 的恢复位于 {@code finally}，即使配置非法或
      * RCON 切换失败也不会让 WebSocket 永久停服；若恢复本身失败且已有原始异常，
@@ -619,12 +620,16 @@ public final class QueQiaoRuntime {
                 }
 
                 loadConfig();
+                // RCON 引用切换放在配置加载之后的第一位：
+                //   1. finally 恢复 WebSocket 时，实际生效的 RCON 客户端一定与当前配置一致；
+                //   2. 旧客户端的在途命令会被立即中止，从而释放占着解码线程的协议回调——
+                //      正是它让 selector 卡在缓冲区等待上（见 WebsocketManager#suspend 的有界等待）。
+                restartRconClient();
                 messagePrefixJsonElement = initMessagePrefixJsonObject(config.get(ConfigKeys.MESSAGE_PREFIX));
                 platformContext.getTranslationService()
                         .reload(config.get(ConfigKeys.ENABLE_TRANSLATION));
                 serverStatusCollector.initPingTarget();
                 serverStatusCollector.updateRefreshInterval(config.get(ConfigKeys.Status.REFRESH_INTERVAL_SECONDS));
-                restartRconClient();
             } catch (RuntimeException | Error e) {
                 reloadFailure = e;
                 throw e;

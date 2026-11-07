@@ -48,7 +48,6 @@ public final class FakeRconServer implements AutoCloseable {
 
     private final CountDownLatch authenticationStarted = new CountDownLatch(1);
     private final CountDownLatch authenticationReleased = new CountDownLatch(1);
-    private final CountDownLatch commandReleased = new CountDownLatch(1);
     private final BlockingQueue<String> receivedCommands = new LinkedBlockingQueue<>();
     private final AtomicInteger closedConnections = new AtomicInteger();
     private final AtomicReference<Socket> activeSocket = new AtomicReference<>();
@@ -59,7 +58,7 @@ public final class FakeRconServer implements AutoCloseable {
      *
      * @param response           命令响应文本
      * @param holdAuthentication true 表示收到 AUTH 后阻塞，直到 {@link #releaseAuthentication()}
-     * @param stallCommands      true 表示收到命令后不返回响应，直到服务关闭
+     * @param stallCommands      true 表示收到命令后不返回响应，只等对端关闭连接（或被关闭）
      */
     public FakeRconServer(String response, boolean holdAuthentication, boolean stallCommands)
             throws IOException {
@@ -70,7 +69,7 @@ public final class FakeRconServer implements AutoCloseable {
      * @param bindHost           监听地址（用于验证"连接用的是哪个地址"）
      * @param response           命令响应文本
      * @param holdAuthentication true 表示收到 AUTH 后阻塞，直到 {@link #releaseAuthentication()}
-     * @param stallCommands      true 表示收到命令后不返回响应，直到服务关闭
+     * @param stallCommands      true 表示收到命令后不返回响应，只等对端关闭连接（或被关闭）
      */
     public FakeRconServer(String bindHost, String response, boolean holdAuthentication, boolean stallCommands)
             throws IOException {
@@ -173,12 +172,9 @@ public final class FakeRconServer implements AutoCloseable {
             }
             receivedCommands.add(command.payload);
             if (stallCommands) {
-                try {
-                    commandReleased.await(2 * WAIT_SECONDS, TimeUnit.SECONDS);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return;
-                }
+                // 不返回响应，但继续监视对端是否关闭：这样"连接被中止"能在毫秒级被观察到。
+                awaitPeerClose(input);
+                return;
             }
             writePacket(output, command.requestId, TYPE_COMMAND_RESPONSE, response);
         }
@@ -260,6 +256,19 @@ public final class FakeRconServer implements AutoCloseable {
         output.write((value >>> 24) & 0xFF);
     }
 
+    /**
+     * 等待对端关闭连接（不再返回任何数据）
+     *
+     * <p>用于模拟"命令已下发、服务端不返回响应"：
+     * 对端一旦中止，read 立即返回 -1，而不需要等 socket 超时。
+     */
+    private static void awaitPeerClose(InputStream input) throws IOException {
+        byte[] sink = new byte[256];
+        while (input.read(sink) >= 0) {
+            // 丢弃：本场景只关心连接是否仍然打开
+        }
+    }
+
     private static void closeQuietly(Socket socket) {
         try {
             socket.close();
@@ -271,7 +280,6 @@ public final class FakeRconServer implements AutoCloseable {
     @Override
     public void close() throws Exception {
         authenticationReleased.countDown();
-        commandReleased.countDown();
         serverSocket.close();
         Socket socket = activeSocket.getAndSet(null);
         if (socket != null) {

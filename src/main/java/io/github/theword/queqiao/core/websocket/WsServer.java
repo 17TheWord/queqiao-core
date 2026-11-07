@@ -8,6 +8,7 @@ import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 import org.java_websocket.WebSocket;
@@ -86,6 +87,34 @@ public class WsServer extends WebSocketServer {
     private final boolean enabled;
     private final HandleProtocolMessage handleProtocolMessage;
     private final Consumer<WsServer> serverFailureHandler;
+
+    /**
+     * selector 线程引用
+     *
+     * <p>Java-WebSocket 把 {@code selectorthread} 声明为 private，外部无法直接判断
+     * "Server 是否已经完全终止"。这里在 {@link #run()} 入口登记当前线程——
+     * <b>不能等到 {@code onStart()}</b>：那之前还要 bind 与创建 selector，
+     * 在这段窗口里 {@link #isTerminated()} 会误报"已终止"。
+     *
+     * <p>标记 {@code volatile}：写入发生在 selector 线程，读取发生在关闭方线程。
+     */
+    private volatile Thread selectorThread;
+
+    /**
+     * 是否已经请求过启动
+     *
+     * <p>{@code selectorThread} 仍为 null 时用它区分两种情况：
+     * "从未启动"（没有可等待的线程）与"已请求启动但线程还没跑到 {@link #run()}"（不能视为已终止）。
+     */
+    private volatile boolean startRequested;
+
+    /**
+     * 中断 selector 线程后，等待其退出的宽限时间（毫秒）
+     *
+     * <p>线程被中断后只需走完当前循环 → {@code doServerShutdown()} → 退出，
+     * 通常是个位数毫秒；500ms 足够吸收调度抖动。
+     */
+    private static final int SELECTOR_TERMINATION_GRACE_MILLIS = 500;
 
     /**
      * 构造函数
@@ -522,5 +551,129 @@ public class WsServer extends WebSocketServer {
     @Override
     public void onStart() {
         this.logger.info(WebsocketConstantMessage.Server.SERVER_STARTING, hostName, port);
+    }
+
+    /**
+     * 启动服务器（登记启动意图）
+     *
+     * <p>{@code WebSocketServer#start()} 只是新建线程后立即返回，因此"已调用 start"与
+     * "线程已在运行"之间存在窗口；登记启动意图后，{@link #isTerminated()} 才不会在
+     * 该窗口里误报"已终止"。
+     */
+    @Override
+    public void start() {
+        this.startRequested = true;
+        super.start();
+    }
+
+    /**
+     * selector 线程入口（登记线程）
+     *
+     * <p>在 {@code super.run()} 之前登记：此时还没有 bind，但线程已经存在，
+     * 关闭方可以据此判断"还有活着的 selector 线程需要等待/中断"。
+     */
+    @Override
+    public void run() {
+        this.selectorThread = Thread.currentThread();
+        super.run();
+    }
+
+    /**
+     * 判断 selector 线程是否已经退出
+     *
+     * <p><b>只表示"线程是否还活着"</b>。{@code WebSocketServer#stop(timeout)} 会关闭已建立的
+     * 连接与解码线程池，但 <b>ServerSocketChannel 是在 selector 线程退出时的
+     * {@code doServerShutdown()} 里才关闭的</b>（{@code DefaultWebSocketServerFactory#close()}
+     * 只关闭线程池）。因此线程还活着时端口可能仍处于监听状态——这正是
+     * {@link #stopBounded(int, String)} 需要"中断兜底"的原因。
+     *
+     * <p>从未请求过启动时返回 {@code true}（没有可等待的线程）；已请求启动但线程尚未
+     * 进入 {@link #run()} 时返回 {@code false}（不能提前宣称已终止）。
+     *
+     * @return true 表示 selector 线程已终止
+     */
+    public boolean isTerminated() {
+        Thread thread = this.selectorThread;
+        if (thread != null) {
+            return !thread.isAlive();
+        }
+        return !this.startRequested;
+    }
+
+    /**
+     * 有界停止服务器
+     *
+     * <p>为什么要分两步：
+     * <ol>
+     *     <li>{@link org.java_websocket.server.WebSocketServer#stop(int, String)} 内部是
+     *         {@code selectorthread.join(timeout)}，<b>timeout 传 0 等于无限等待</b>；</li>
+     *     <li>它并不会关闭 ServerSocketChannel——那发生在 selector 线程退出的
+     *         {@code doServerShutdown()} 里。线程卡住时端口会一直可连。</li>
+     * </ol>
+     * 因此这里先按给定上限等待，超时则<b>中断 selector 线程</b>（{@code select()} 与
+     * 缓冲区等待都可中断），再等一小段宽限时间让它走到 {@code doServerShutdown()}。
+     *
+     * <p>本方法不会抛出 {@link InterruptedException}：调用方（reload）随后还要读取配置、
+     * 建立新的 RCON 连接，中断标记会让这些可中断操作立即失败。中断只作为"停止失败"记录。
+     *
+     * @param timeoutMillis 等待 selector 线程自行退出的上限（毫秒），必须大于 0
+     * @param reason        关闭原因（纯文本）
+     * @return true 表示 selector 线程已退出（ServerSocketChannel 已关闭）；
+     *         false 表示已发出中断但线程仍未退出，端口可能仍在监听
+     */
+    public boolean stopBounded(int timeoutMillis, String reason) {
+        if (timeoutMillis <= 0) {
+            // 防回归：timeout 为 0 会让 WebSocketServer#stop 无限等待 selector 线程
+            throw new IllegalArgumentException("timeoutMillis 必须大于 0，实际 " + timeoutMillis);
+        }
+        try {
+            stop(timeoutMillis, reason);
+        } catch (InterruptedException e) {
+            // 有意不恢复中断标记，理由见方法注释
+            this.logger.warn("等待 WebSocket Server 停止时被中断，改为中断 selector 线程");
+        }
+        if (isTerminated()) {
+            return true;
+        }
+
+        Thread thread = this.selectorThread;
+        if (thread == null) {
+            // 已请求启动但线程还没进入 run()：它一旦进入就会看到 isclosed 并立即退出，
+            // 这里只需要有界等待状态翻转。
+            return awaitTerminatedState(SELECTOR_TERMINATION_GRACE_MILLIS);
+        }
+
+        thread.interrupt();
+        try {
+            thread.join(SELECTOR_TERMINATION_GRACE_MILLIS);
+        } catch (InterruptedException e) {
+            // 同上：不恢复中断标记
+            this.logger.warn("等待 selector 线程退出时被中断");
+        }
+        return !thread.isAlive();
+    }
+
+    /**
+     * 有界轮询等待"已终止"状态翻转
+     *
+     * <p>只在拿不到 selector 线程引用时使用（线程尚未进入 {@link #run()}），
+     * 此时无法 {@code join}，只能轮询状态。
+     *
+     * @param timeoutMillis 等待上限
+     * @return 是否已终止
+     */
+    private boolean awaitTerminatedState(int timeoutMillis) {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+        while (System.nanoTime() < deadline) {
+            if (isTerminated()) {
+                return true;
+            }
+            try {
+                Thread.sleep(5L);
+            } catch (InterruptedException e) {
+                return isTerminated();
+            }
+        }
+        return isTerminated();
     }
 }

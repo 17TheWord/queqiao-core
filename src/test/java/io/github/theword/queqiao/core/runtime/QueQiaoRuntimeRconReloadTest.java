@@ -176,6 +176,56 @@ class QueQiaoRuntimeRconReloadTest {
     }
 
     @Test
+    @DisplayName("Reload 不等待在途 RCON 命令：中止旧连接、旧命令失败，新请求由新 Server 处理")
+    void reloadAbortsInFlightRconCommandAndSwitchesToNewServer() throws Exception {
+        // 旧 Server 收到命令后不返回响应：模拟"命令仍在等 Minecraft 主线程处理"
+        try (FakeRconServer oldServer = new FakeRconServer("unused", false, true);
+             FakeRconServer newServer = new FakeRconServer("from-new", false, false);
+             RuntimeConfigFixture fixture = new RuntimeConfigFixture("")) {
+
+            QueQiaoRuntime created = startRuntime(fixture, true, "127.0.0.1", oldServer.getPort());
+
+            // 两个线程：一个被在途命令占住，一个执行 reload（两者都必须有界等待，避免测试自身挂死）
+            ExecutorService executor = Executors.newFixedThreadPool(2);
+            Future<String> command = executor.submit(() -> created.sendRconCommand("stalled"));
+            try {
+                assertNotNull(oldServer.awaitCommand(), "旧 Server 应已收到命令（客户端正在等待响应）");
+
+                fixture.write(RuntimeConfigFixture.yaml(
+                        true, webSocketPort, true, "127.0.0.1", newServer.getPort(), RCON_PASSWORD));
+
+                Future<Long> reloading = executor.submit(() -> {
+                    long startedAt = System.nanoTime();
+                    created.reload();
+                    return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
+                });
+                long elapsedMillis = reloading.get(5, TimeUnit.SECONDS);
+
+                assertTrue(
+                        elapsedMillis < 2000L,
+                        "reload 不应等待在途 RCON 命令自然返回，实际耗时 " + elapsedMillis + "ms");
+
+                // 旧命令因连接被中止而失败，且不会被自动重放
+                Throwable failure = assertThrows(Exception.class, () -> command.get(5, TimeUnit.SECONDS))
+                        .getCause();
+                assertTrue(failure instanceof RconException, "旧命令应以 RconException 结束：" + failure);
+                assertEquals(
+                        RconException.Kind.COMMAND_FAILED,
+                        ((RconException) failure).getKind(),
+                        "连接被中止应映射为 COMMAND_FAILED");
+
+                assertTrue(oldServer.awaitClosedConnections(1), "旧连接应收到 Socket 中止");
+                assertTrue(awaitPortAccepting(webSocketPort), "Reload 完成后 WebSocket 应恢复监听");
+
+                assertEquals("from-new", created.sendRconCommand("list"), "新请求应由新 Server 处理");
+                assertEquals("list", newServer.awaitCommand(), "新 Server 应收到该命令");
+            } finally {
+                executor.shutdownNow();
+            }
+        }
+    }
+
+    @Test
     @DisplayName("配置非法时 Reload 失败，但 WebSocket 按原配置恢复且旧 RCON 保持可用")
     void reloadWithInvalidConfigRestoresEndpoints() throws Exception {
         try (FakeRconServer rcon = new FakeRconServer("from-A", false, false);

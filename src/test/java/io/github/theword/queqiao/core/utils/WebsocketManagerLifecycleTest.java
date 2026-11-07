@@ -6,6 +6,7 @@ import io.github.theword.queqiao.core.config.Config;
 import io.github.theword.queqiao.core.handle.HandleProtocolMessage;
 import io.github.theword.queqiao.core.support.PlatformStubs;
 import io.github.theword.queqiao.core.websocket.WsClient;
+import io.github.theword.queqiao.core.websocket.WsServer;
 import com.google.gson.Gson;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -20,6 +21,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -189,7 +191,8 @@ class WebsocketManagerLifecycleTest {
         WebsocketManager manager = newManager(serverConfig(port));
         try {
             manager.start();
-            assertNotNull(manager.getWsServer(), "启动后应存在 WebSocket Server");
+            WsServer server = manager.getWsServer();
+            assertNotNull(server, "启动后应存在 WebSocket Server");
             ScheduledThreadPoolExecutor scheduler = manager.reconnectSchedulerForTest();
 
             manager.suspend();
@@ -197,6 +200,7 @@ class WebsocketManagerLifecycleTest {
             assertNull(manager.getWsServer(), "暂停后不应再持有 Server");
             assertTrue(manager.getWsClientList().isEmpty(), "暂停后不应残留 Client");
             assertFalse(scheduler.isShutdown(), "暂停不得销毁共享重连调度器");
+            assertTrue(awaitTerminated(server, 5_000L), "正常暂停应确认 selector 线程退出");
 
             // 幂等：重复暂停不抛异常，也不会销毁调度器
             manager.suspend();
@@ -266,6 +270,27 @@ class WebsocketManagerLifecycleTest {
         } finally {
             manager.stop(1000, "test cleanup");
         }
+    }
+
+    // ------------------------------------------------------------------
+    // 辅助
+    // ------------------------------------------------------------------
+
+    /**
+     * 等待 selector 线程退出
+     *
+     * <p>端口是否释放由 {@code WsServerStopTest} 用确定性场景覆盖：本类的端口来自
+     * {@code findFreePort()}，与真正的 bind 之间存在竞态，不适合作为断言依据。
+     */
+    private static boolean awaitTerminated(WsServer server, long timeoutMillis) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+        while (System.nanoTime() < deadline) {
+            if (server.isTerminated()) {
+                return true;
+            }
+            Thread.sleep(10L);
+        }
+        return server.isTerminated();
     }
 
 }
