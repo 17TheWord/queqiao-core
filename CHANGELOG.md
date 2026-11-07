@@ -264,6 +264,9 @@ public abstract class CommandExecutionContext<NCS> {
 
 ### 变更
 
+- **`RconClient` 的关闭语义改为"快速中止"**：`stop()` 不再等待在途命令结束，且停止后的实例
+  视为已废弃——不再接受 `connect()` 与 `sendCommand()`，需要重新连接时由 `QueQiaoRuntime`
+  创建新实例。这样既消除了死锁，也避免"同一实例在停止与重连之间来回切换"引入新的竞态。
 - **正常启动不再写 `config.yml`**：只有文件**缺失或为空**时才会生成一份带注释的完整配置；
   文件正常时**只读不写**——缺失字段在**内存**中取 Schema 默认值，用户文件一个字都不动。
   真正需要覆盖用户文件的场景（未来的配置迁移、显式"同步配置"命令）由
@@ -367,6 +370,23 @@ public abstract class CommandExecutionContext<NCS> {
 
 ### 修复
 
+- **Reload / 关闭时在途 RCON 请求会阻塞连接销毁，导致服务器主线程死锁**（严重）：
+  `RconClient` 此前用同一个对象监视器串行化 `connect` / `sendCommand` / `stop`，
+  于是当命令线程正阻塞在"等待服务器返回响应"上时，`stop()` 只能排队等它结束；
+  而 RCON 命令往往要等 Minecraft 主线程处理完才返回，主线程又在执行 reload / shutdown，
+  双方互相等待即形成死锁。现在拆成两把锁：
+  - `lifecycleLock` 只做状态判断与连接引用发布，**绝不**承载网络 IO；
+  - `commandLock` 只保证同一条连接上的命令串行；
+  - `stop()` **不获取 `commandLock`**，只做"摘引用 + 关闭底层 Socket"，并在锁外执行。
+
+  在途命令会因 Socket 被关闭而失败（映射为 `COMMAND_FAILED` / HTTP 500），这是预期行为，
+  **不会自动重放**——RCON 命令可能有副作用，客户端无法判断服务器是否已经执行。
+- **关闭连接与命令执行并发时资源无法及时释放**：新增 `Connection#abort()`，
+  直接关闭底层 Socket 而**不**调用 `org.glavo.rcon.Rcon#close()` / `disconnect()`——
+  后两者会先获取 RCON 库内部的 `ReentrantLock`，而在途命令正持有同一把锁。
+  命令失败时的清理改为 identity 检查 + 中止：只清除仍然指向失败连接的引用，
+  迟到的异常不会清掉已经替换上来的新连接；连接建立与 `stop()` 竞争时，
+  迟到的连接不会发布到已停止的实例上，而是被立即中止。
 - **配置文件语法错误会导致整份配置被默认值覆盖**（严重）：此前 YAML 解析失败时被当作"空配置"，
   于是所有字段都被视为缺失、进而用默认值重写整个文件——用户少一个缩进就会丢掉全部配置。
   现在严格区分 `EMPTY` 与 `INVALID`：**解析失败时原文件绝不被覆盖**，

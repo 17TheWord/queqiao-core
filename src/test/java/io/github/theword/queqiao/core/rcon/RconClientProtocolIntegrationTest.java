@@ -15,12 +15,16 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -158,6 +162,44 @@ class RconClientProtocolIntegrationTest {
                 assertEquals(RconException.Kind.COMMAND_FAILED, error.getKind());
                 assertFalse(client.isConnected(), "畸形响应后客户端应清理连接");
             } finally {
+                client.stop();
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("stop 关闭底层 Socket 可中断真实请求的等待，命令线程随即退出")
+    void stopAbortsInFlightRequestOnRealSocket() throws Exception {
+        try (FakeRconServer server = new FakeRconServer(PASSWORD, "unused", FakeRconServer.CommandMode.STALL)) {
+            RconClient client = new RconClient(LOGGER, server.getPort(), PASSWORD);
+            ExecutorService executor = Executors.newSingleThreadExecutor();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            try {
+                client.connect();
+                assertTrue(server.awaitAuthentication(), "测试服务端应接受认证");
+
+                Future<?> command = executor.submit(() -> {
+                    try {
+                        client.sendCommand("list");
+                    } catch (Throwable error) {
+                        failure.set(error);
+                    }
+                });
+                assertTrue(server.awaitCommand(), "服务端应已收到命令，客户端正在等待响应");
+
+                long startedAt = System.nanoTime();
+                client.stop();
+                long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
+                assertTrue(elapsedMillis < 2000L, "stop 不应等待服务端响应，实际耗时 " + elapsedMillis + "ms");
+
+                // 命令线程必须自行退出：只有 Socket 被真正关闭，阻塞中的读才会立即抛异常；
+                // 否则这里会一直等到 SO_TIMEOUT（10 秒），也意味着底层 RCON 锁仍被占用。
+                command.get(5, TimeUnit.SECONDS);
+                assertNotNull(failure.get(), "在途命令应因连接被中止而失败");
+                assertEquals(RconException.Kind.COMMAND_FAILED, ((RconException) failure.get()).getKind());
+                assertFalse(client.isConnected(), "stop 之后不应再报告已连接");
+            } finally {
+                executor.shutdownNow();
                 client.stop();
             }
         }
