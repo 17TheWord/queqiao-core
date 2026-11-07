@@ -19,7 +19,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -112,6 +114,12 @@ class CommandLayerTest {
 
         try (ConfigFixture ignored = new ConfigFixture(serverPort, deadPort)) {
             startRuntime();
+
+            // 必须先等到端口真正可连：WebSocketServer#start() 只是起一个 selector 线程，
+            // 真正的 bind 在该线程里异步完成。若客户端抢在 bind 之前 connect，会拿到
+            // ECONNREFUSED，而 Java-WebSocket 客户端不会自动重连，onOpen 永远不会触发
+            // ——表现为 awaitOpen 干等 10 秒后失败（CI 上就是这样挂的）。
+            awaitCondition(() -> isPortAccepting(serverPort), 10_000L, "WebSocket Server 应完成监听");
 
             ProbeClient first = new ProbeClient(serverPort);
             ProbeClient second = new ProbeClient(serverPort);
@@ -430,6 +438,25 @@ class CommandLayerTest {
         try (ServerSocket socket = new ServerSocket(0)) {
             socket.setReuseAddress(true);
             return socket.getLocalPort();
+        }
+    }
+
+    /**
+     * 探测端口是否已经可以建立 TCP 连接
+     *
+     * <p>只做一次短超时的 {@code connect}：连接成功即说明服务端已完成 bind。
+     * 这条裸 TCP 连接不会污染 {@code getConnections()}——Java-WebSocket 只在
+     * <b>握手成功</b>后才把连接登记进去，探测连接在握手前就关闭了。
+     *
+     * @param port 端口
+     * @return true 表示端口已在监听
+     */
+    private static boolean isPortAccepting(int port) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress("127.0.0.1", port), 500);
+            return true;
+        } catch (IOException e) {
+            return false;
         }
     }
 
