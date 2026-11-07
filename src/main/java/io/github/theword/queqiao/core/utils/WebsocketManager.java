@@ -37,7 +37,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <p>调度器在构造阶段创建（{@link ScheduledThreadPoolExecutor} 的 core 线程在首次提交任务时才启动，
  * 因此即使未启用 Client 也无实际线程开销），只在 {@link #stop(int, String)} 这一永久销毁路径
- * 关闭；{@code stopClients()} / {@code restartClients()} 绝不触碰它。
+ * 关闭；{@code stopClients()} / {@code restartClients()} / {@link #suspend()} / {@link #restart(Config)}
+ * 绝不触碰它。
  *
  * @since 0.6.11
  */
@@ -345,17 +346,30 @@ public class WebsocketManager {
         }
     }
 
-    private void stopServer(List<String> messages, String reason) {
-        if (wsServer != null) {
-            try {
-                wsServer.stop(0, reason);
-                messages.add(reason);
-            } catch (InterruptedException e) {
-                messages.add(WebsocketConstantMessage.Server.ERROR_ON_STOPPING);
-                utils.debugLog(e.getMessage());
-            }
+    /**
+     * 停止 WebSocket Server
+     *
+     * @param messages 进度消息收集器
+     * @param reason   关闭原因
+     * @return true 表示"没有 Server"或"已确认停止"；false 表示停止过程被中断，无法确认已停止接入
+     */
+    private boolean stopServer(List<String> messages, String reason) {
+        WsServer current = wsServer;
+        if (current == null) {
+            return true;
+        }
+        boolean confirmed = false;
+        try {
+            current.stop(0, reason);
+            messages.add(reason);
+            confirmed = true;
+        } catch (InterruptedException e) {
+            messages.add(WebsocketConstantMessage.Server.ERROR_ON_STOPPING);
+            utils.debugLog(e.getMessage());
+        } finally {
             wsServer = null;
         }
+        return confirmed;
     }
 
     private void restartServer(List<String> messages) {
@@ -426,6 +440,39 @@ public class WebsocketManager {
             stopClients(code, reason, messages);
             stopServer(messages, reason);
             shutdownReconnectScheduler();
+            return messages;
+        }
+    }
+
+    /**
+     * 临时暂停所有 endpoint（幂等，不销毁共享调度器）
+     *
+     * <p>与 {@link #stop(int, String)} 的区别：本方法只停止 Client 与 Server，
+     * <b>保留</b> Manager 实例、配置能力与共享重连调度器，因此可以在配置切换过程中
+     * "先停止接入 → 换掉依赖配置的组件 → 再按新配置重启"。
+     *
+     * <p>暂停期间不会有新的协议请求进入 Runtime。调用方必须在流程结束后调用
+     * {@link #restart(Config)} 恢复（即使中间步骤失败），否则 WebSocket 会一直停服。
+     *
+     * <p>本方法<b>不会</b>设置 {@code destroyed} 标记，也不关闭 {@code reconnectScheduler}——
+     * 那两件事只属于 {@link #stop(int, String)} 这条永久销毁路径。
+     *
+     * @return 本应展示给用户的进度消息，按发生顺序排列
+     * @throws IllegalStateException 无法确认 WebSocket Server 已停止接入时
+     *                               （调用方应中止后续切换，而不是假装暂停完成）
+     */
+    public List<String> suspend() {
+        synchronized (lifecycleLock) {
+            List<String> messages = new ArrayList<>();
+            if (destroyed) {
+                utils.debugLog("WebsocketManager 已销毁，忽略暂停请求");
+                return messages;
+            }
+            stopClients(CLOSE_CODE_NORMAL, WebsocketConstantMessage.CLOSE_BY_RELOAD, messages);
+            if (!stopServer(messages, WebsocketConstantMessage.Server.RELOADING)) {
+                throw new IllegalStateException("WebSocket Server 未能确认停止，已中止后续切换");
+            }
+            started = false;
             return messages;
         }
     }

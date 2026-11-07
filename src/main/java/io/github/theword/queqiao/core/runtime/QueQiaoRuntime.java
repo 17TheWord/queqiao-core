@@ -132,7 +132,12 @@ public final class QueQiaoRuntime {
 
     private volatile WebsocketManager websocketManager;
 
-    /** 串行化 Runtime 对 RCON 客户端的创建、替换和关闭。 */
+    /**
+     * 保护 {@link #rconClient} 引用的替换与读取
+     *
+     * <p>只承载"读引用 / 换引用"这类瞬时操作：建立连接、关闭连接等网络与 Socket 操作
+     * 一律在锁外执行，避免关闭旧客户端时被在途命令拖住。
+     */
     private final Object rconLifecycleLock = new Object();
 
     private volatile RconClient rconClient;
@@ -570,8 +575,10 @@ public final class QueQiaoRuntime {
         serverStatusCollector.initPingTarget();
         serverStatusCollector.startRefreshScheduler(
                 config.get(ConfigKeys.Status.REFRESH_INTERVAL_SECONDS));
-        initWebsocketManager();
+        // 先初始化 RCON，再开放 WebSocket：避免"WebSocket 已经在接收请求，而 RCON 还没准备好"
+        // 的启动窗口。RCON 连接失败只会让 RCON 请求得到明确的不可用响应，不影响其它功能启动。
         initRconClient();
+        initWebsocketManager();
     }
 
     /**
@@ -579,6 +586,14 @@ public final class QueQiaoRuntime {
      *
      * <p>只允许对 {@link RuntimeState#RUNNING} 的 Runtime 调用，其余状态抛
      * {@link IllegalStateException}。
+     *
+     * <p><b>时序</b>：先暂停 WebSocket 接入 → 加载配置 → 切换 RCON → 更新其它依赖配置的组件 →
+     * 最后按（新）配置恢复 WebSocket。这样 RCON 新旧连接不会在"请求仍在流入"的窗口内交错，
+     * 关闭旧 RCON 也不需要等待正在执行的命令。
+     *
+     * <p><b>恢复必须发生</b>：Endpoint 的恢复位于 {@code finally}，即使配置非法或
+     * RCON 切换失败也不会让 WebSocket 永久停服；若恢复本身失败且已有原始异常，
+     * 两个异常都会被保留（后者作为 suppressed）。
      *
      * <p>不回执：进度消息作为 {@link ReloadResult} 返回，由调用方决定如何展示。
      *
@@ -590,18 +605,43 @@ public final class QueQiaoRuntime {
                 throw new IllegalStateException("QueQiaoRuntime 当前状态不允许 reload: " + state.get());
             }
 
-            loadConfig();
-            messagePrefixJsonElement = initMessagePrefixJsonObject(config.get(ConfigKeys.MESSAGE_PREFIX));
-            platformContext.getTranslationService()
-                    .reload(config.get(ConfigKeys.ENABLE_TRANSLATION));
-            serverStatusCollector.initPingTarget();
-            serverStatusCollector.updateRefreshInterval(config.get(ConfigKeys.Status.REFRESH_INTERVAL_SECONDS));
             List<String> messages = new ArrayList<>();
             WebsocketManager manager = websocketManager;
-            if (manager != null) {
-                messages.addAll(manager.restart(config));
+            // 只要 Manager 存在就必须在 finally 中恢复：即使 suspend() 中途抛异常，
+            // 也不能把 WebSocket 留在停服状态。
+            boolean restoreEndpoints = manager != null;
+            Throwable reloadFailure = null;
+
+            try {
+                if (manager != null) {
+                    // 先停止接入：RCON 切换期间不应再有新的协议请求进入 Runtime。
+                    messages.addAll(manager.suspend());
+                }
+
+                loadConfig();
+                messagePrefixJsonElement = initMessagePrefixJsonObject(config.get(ConfigKeys.MESSAGE_PREFIX));
+                platformContext.getTranslationService()
+                        .reload(config.get(ConfigKeys.ENABLE_TRANSLATION));
+                serverStatusCollector.initPingTarget();
+                serverStatusCollector.updateRefreshInterval(config.get(ConfigKeys.Status.REFRESH_INTERVAL_SECONDS));
+                restartRconClient();
+            } catch (RuntimeException | Error e) {
+                reloadFailure = e;
+                throw e;
+            } finally {
+                if (restoreEndpoints) {
+                    try {
+                        // 配置加载失败时 config 仍是原配置，因此这里等价于"按原配置恢复"。
+                        messages.addAll(manager.restart(config));
+                    } catch (RuntimeException | Error restartError) {
+                        if (reloadFailure != null) {
+                            reloadFailure.addSuppressed(restartError);
+                        } else {
+                            throw restartError;
+                        }
+                    }
+                }
             }
-            restartRconClient();
             return new ReloadResult(messages);
         }
     }
@@ -650,12 +690,15 @@ public final class QueQiaoRuntime {
             websocketManager = null;
         }
 
+        RconClient client;
         synchronized (rconLifecycleLock) {
-            RconClient client = rconClient;
+            client = rconClient;
             rconClient = null;
-            if (client != null) {
-                client.stop();
-            }
+        }
+        if (client != null) {
+            // 关闭在锁外执行：stop() 只关闭 Socket、不等待在途命令，
+            // 但仍不应把 Socket 操作放进保护引用的临界区。
+            client.stop();
         }
 
         // 翻译服务由平台持有，这里只负责按生命周期停用。disable() 幂等，
@@ -687,39 +730,60 @@ public final class QueQiaoRuntime {
         websocketManager.start();
     }
 
+    /**
+     * 按当前配置初始化 RCON 客户端
+     *
+     * <p>建连是网络 IO，必须在 {@code rconLifecycleLock} 之外进行；锁只用于发布引用。
+     * 连接失败不抛异常——客户端保持未连接状态，后续 RCON 请求得到明确的不可用结果，
+     * 其它功能（含 WebSocket）照常启动。
+     */
     private void initRconClient() {
-        synchronized (rconLifecycleLock) {
-            ConfigSnapshot configSnapshot = config.snapshot();
-            if (configSnapshot.valueOf(ConfigKeys.Rcon.ENABLE)) {
-                RconClient client = createRconClient(configSnapshot);
-                client.connect();
-                rconClient = client;
-            } else {
+        ConfigSnapshot configSnapshot = config.snapshot();
+        if (!configSnapshot.valueOf(ConfigKeys.Rcon.ENABLE)) {
+            synchronized (rconLifecycleLock) {
                 rconClient = null;
-                logger.info("Rcon 未启用，跳过 Rcon 客户端初始化");
             }
+            logger.info("Rcon 未启用，跳过 Rcon 客户端初始化");
+            return;
+        }
+
+        RconClient client = createRconClient(configSnapshot);
+        client.connect();
+        synchronized (rconLifecycleLock) {
+            rconClient = client;
         }
     }
 
+    /**
+     * 按当前配置替换 RCON 客户端
+     *
+     * <p>顺序：读取配置 → 锁外建立新连接 → 短暂加锁替换引用 → 锁外中止旧客户端。
+     *
+     * <p>旧客户端在新客户端就绪之前仍然有效，因此"新地址连不上"不会让 RCON 能力
+     * 凭空消失；但引用一旦替换，后续命令绝不会再发往旧地址——新客户端未连接时
+     * 请求得到明确的不可用结果。
+     *
+     * <p>中止旧客户端不等待在途命令（见 {@code RconClient#stop()}），因此本方法不会
+     * 阻塞正在等待 Minecraft 主线程返回的 RCON 请求。
+     */
     private void restartRconClient() {
-        synchronized (rconLifecycleLock) {
-            RconClient previous = rconClient;
-            ConfigSnapshot configSnapshot = config.snapshot();
-            if (!configSnapshot.valueOf(ConfigKeys.Rcon.ENABLE)) {
-                rconClient = null;
-                if (previous != null) {
-                    previous.stop();
-                    logger.info("Rcon 已根据新配置禁用并关闭连接");
-                }
-                return;
-            }
-
-            RconClient replacement = createRconClient(configSnapshot);
+        ConfigSnapshot configSnapshot = config.snapshot();
+        RconClient replacement = null;
+        if (configSnapshot.valueOf(ConfigKeys.Rcon.ENABLE)) {
+            replacement = createRconClient(configSnapshot);
             replacement.connect();
-            // 先发布新客户端，再关闭旧客户端；已经拿到旧引用的调用由旧客户端自身串行化。
+        }
+
+        RconClient previous;
+        synchronized (rconLifecycleLock) {
+            previous = rconClient;
             rconClient = replacement;
-            if (previous != null) {
-                previous.stop();
+        }
+
+        if (previous != null) {
+            previous.stop();
+            if (replacement == null) {
+                logger.info("Rcon 已根据新配置禁用并关闭连接");
             }
         }
     }

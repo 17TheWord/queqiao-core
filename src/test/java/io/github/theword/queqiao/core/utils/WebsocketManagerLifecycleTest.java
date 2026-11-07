@@ -24,6 +24,7 @@ import java.util.concurrent.ScheduledThreadPoolExecutor;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -84,6 +85,14 @@ class WebsocketManagerLifecycleTest {
     @SuppressWarnings("unchecked")
     private static Map<String, Object> parse(String yaml) {
         return (Map<String, Object>) new Yaml().load(yaml);
+    }
+
+    /**
+     * 启用 WebSocket Server（Client 关闭）
+     */
+    private static Config serverConfig(int port) {
+        return runtimeOf("websocket_server:\n  enable: true\n  host: \"127.0.0.1\"\n  port: " + port
+                + "\nwebsocket_client:\n  enable: false\n");
     }
 
     private static WebsocketManager newManager(Config config) {
@@ -167,6 +176,49 @@ class WebsocketManagerLifecycleTest {
         } finally {
             manager.stop(1000, "test cleanup");
         }
+    }
+
+    // ------------------------------------------------------------------
+    // 临时暂停（reload 协调）
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("suspend() 停止 Client 与 Server，但保留共享调度器，且可重复调用")
+    void suspendStopsEndpointsButKeepsScheduler() throws Exception {
+        int port = findFreePort();
+        WebsocketManager manager = newManager(serverConfig(port));
+        try {
+            manager.start();
+            assertNotNull(manager.getWsServer(), "启动后应存在 WebSocket Server");
+            ScheduledThreadPoolExecutor scheduler = manager.reconnectSchedulerForTest();
+
+            manager.suspend();
+
+            assertNull(manager.getWsServer(), "暂停后不应再持有 Server");
+            assertTrue(manager.getWsClientList().isEmpty(), "暂停后不应残留 Client");
+            assertFalse(scheduler.isShutdown(), "暂停不得销毁共享重连调度器");
+
+            // 幂等：重复暂停不抛异常，也不会销毁调度器
+            manager.suspend();
+            assertFalse(scheduler.isShutdown(), "重复暂停仍不得销毁调度器");
+
+            // 恢复：restart 使用同一调度器重新启动 endpoint
+            manager.restart(serverConfig(port));
+            assertNotNull(manager.getWsServer(), "恢复后应重新启动 Server");
+            assertFalse(scheduler.isShutdown(), "恢复不得销毁调度器");
+        } finally {
+            manager.stop(1000, "test cleanup");
+        }
+    }
+
+    @Test
+    @DisplayName("已销毁的 Manager 上调用 suspend() 为安全 no-op")
+    void suspendAfterStopIsNoOp() {
+        WebsocketManager manager = newManager(disabledTransportsConfig());
+        manager.stop(1000, "test");
+
+        assertTrue(manager.suspend().isEmpty(), "已销毁后暂停应被安全忽略");
+        assertTrue(manager.reconnectSchedulerForTest().isShutdown(), "已销毁后不得复活调度器");
     }
 
     // ------------------------------------------------------------------

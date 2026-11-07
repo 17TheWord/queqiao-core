@@ -197,6 +197,9 @@ public abstract class CommandExecutionContext<NCS> {
 
 ### 新增
 
+- **`WebsocketManager#suspend()`**：临时停止所有 endpoint 但**保留**共享重连调度器，
+  供 reload 在切换 RCON 期间暂停接入；幂等，且不设置永久销毁标记（那仍只属于 `stop()`）。
+  无法确认 WebSocket Server 已停止接入时抛 `IllegalStateException`，调用方应中止后续切换。
 - **`rcon.host` 配置项**：指定 RCON 服务地址，默认 `127.0.0.1`。
   - 支持主机名、IPv4、IPv6 字面地址与域名，不做格式限制；空白值在校验阶段即被拒绝。
   - 默认值刻意使用 IPv4 回环地址而不是 `localhost`——部分操作系统会把 `localhost`
@@ -370,6 +373,16 @@ public abstract class CommandExecutionContext<NCS> {
 
 ### 修复
 
+- **Reload 期间 RCON 切换与 WebSocket 请求交错**：`reload()` 现在按
+  "暂停 WebSocket 接入 → 加载配置 → 切换 RCON → 更新其它组件 → 按新配置恢复"执行，
+  切换过程中不会再有新请求进入 Runtime；旧 RCON 的关闭也不需要等待在途命令。
+  Endpoint 的恢复位于 `finally`：配置非法、RCON 连不上或其它步骤失败都不会让
+  WebSocket 永久停服，恢复本身的异常会与原始异常一并保留（作为 suppressed）。
+  **升级提示**：reload 期间 WebSocket 会短暂停止接入（通常为毫秒级），
+  已建立连接会被正常关闭并由客户端按既有策略重连。
+- **启动时 WebSocket 先于 RCON 就绪**：`doStart()` 改为先初始化 RCON 再开放 WebSocket，
+  消除"WebSocket 已经在接收请求、而 RCON 还没连上"的启动窗口。
+  RCON 连接失败仍然不会阻断启动，相关请求得到明确的不可用响应。
 - **Reload / 关闭时在途 RCON 请求会阻塞连接销毁，导致服务器主线程死锁**（严重）：
   `RconClient` 此前用同一个对象监视器串行化 `connect` / `sendCommand` / `stop`，
   于是当命令线程正阻塞在"等待服务器返回响应"上时，`stop()` 只能排队等它结束；
