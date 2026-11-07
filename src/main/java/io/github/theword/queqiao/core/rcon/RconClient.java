@@ -86,7 +86,22 @@ public class RconClient {
      * @param password Rcon 密码
      */
     public RconClient(Logger logger, int port, String password) {
-        this(logger, DEFAULT_HOST, port, password);
+        this(logger, port, password, RconClient::openConnection);
+    }
+
+    /**
+     * 使用默认地址（{@link #DEFAULT_HOST}）构造客户端，并注入连接工厂
+     *
+     * <p>包级可见：这是上面那个公开构造器<b>同一条委托路径</b>，只是允许替换连接工厂，
+     * 因此测试可以通过工厂观察到"旧构造器实际使用了哪个 Host"。
+     *
+     * @param logger            日志实现
+     * @param port              Rcon 端口
+     * @param password          Rcon 密码
+     * @param connectionFactory 连接工厂
+     */
+    RconClient(Logger logger, int port, String password, ConnectionFactory connectionFactory) {
+        this(logger, DEFAULT_HOST, port, password, connectionFactory);
     }
 
     /**

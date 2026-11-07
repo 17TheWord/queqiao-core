@@ -367,37 +367,48 @@ public class WebsocketManager {
      * 线程），也不假设 {@code stop(timeout)} 已经关闭监听端口——ServerSocketChannel 是在
      * selector 线程退出时才关闭的。具体策略见 {@link WsServer#stopBounded(int, String)}。
      *
-     * <p>超时后<b>不会</b>假装 Server 已完全终止：引用照常清空（不能复用该实例），
-     * 但返回值与日志会明确区分"已终止"与"未能确认终止"。
+     * <p><b>停止未确认时保留引用</b>：只有确认 selector 线程退出后才清空 {@code wsServer}。
+     * 否则旧实例会失去跟踪（既无法再停止、也无法判断端口是否仍被占用），
+     * 而调用方会误以为端口已释放并继续 bind。
      *
      * @param messages 进度消息收集器
      * @param reason   关闭原因
      * @return true 表示没有 Server，或已确认 selector 线程退出（端口已释放）；
-     *         false 表示已中断但仍未确认线程退出，端口可能仍在监听
+     *         false 表示已中断但仍未确认线程退出，<b>引用被保留</b>，端口可能仍在监听
      */
     private boolean stopServer(List<String> messages, String reason) {
         WsServer current = wsServer;
         if (current == null) {
             return true;
         }
-        boolean terminated;
-        try {
-            terminated = current.stopBounded(SERVER_STOP_JOIN_TIMEOUT_MILLIS, reason);
-            messages.add(reason);
-        } finally {
-            wsServer = null;
-        }
+        boolean terminated = current.stopBounded(SERVER_STOP_JOIN_TIMEOUT_MILLIS, reason);
+        messages.add(reason);
         if (!terminated) {
             logger.warn(
                     "WebSocket Server 未在 {} ms 内确认停止，selector 线程可能仍阻塞在协议回调中；"
-                            + "已发出中断，但端口可能仍在监听",
+                            + "已发出中断，但端口可能仍在监听（保留旧实例以便再次停止）",
                     SERVER_STOP_JOIN_TIMEOUT_MILLIS);
+            messages.add(Tool.format(
+                    WebsocketConstantMessage.Server.STOP_TIMEOUT, SERVER_STOP_JOIN_TIMEOUT_MILLIS));
+            return false;
         }
-        return terminated;
+        wsServer = null;
+        return true;
     }
 
+    /**
+     * 按新配置重建 Server
+     *
+     * <p><b>旧 Server 未确认停止时不启动新 Server</b>：此时监听端口可能仍被旧实例占用，
+     * 直接 bind 只会异步失败（{@code onError} → 清空引用），结果既没有服务、
+     * 又失去了对旧实例的跟踪。这里改为保留旧实例、明确报告失败，并让下一次
+     * {@code restart()} / {@code stop()} 再次尝试停止它。
+     */
     private void restartServer(List<String> messages) {
-        stopServer(messages, WebsocketConstantMessage.Server.RELOADING);
+        if (!stopServer(messages, WebsocketConstantMessage.Server.RELOADING)) {
+            messages.add(WebsocketConstantMessage.Server.RESTART_SKIPPED);
+            return;
+        }
         if (this.config.get(ConfigKeys.WebSocket.ENABLE)) {
             startServer(messages);
         }
@@ -446,6 +457,9 @@ public class WebsocketManager {
      *
      * <p>这是唯一会销毁共享调度器的路径。
      *
+     * <p>若上一次停止未能确认 Server 终止（引用被保留），重复调用本方法会<b>再次尝试</b>
+     * 停止它——否则旧实例与监听端口会永久失联。
+     *
      * <p><b>不回执</b>：见 {@link #start()}。
      *
      * @param code   关闭码
@@ -455,12 +469,13 @@ public class WebsocketManager {
     public List<String> stop(int code, String reason) {
         synchronized (lifecycleLock) {
             List<String> messages = new ArrayList<>();
-            if (destroyed) {
+            if (destroyed && wsServer == null) {
                 utils.debugLog("WebsocketManager 已销毁，忽略重复停止");
                 return messages;
             }
             destroyed = true;
             started = false;
+            handleProtocolMessage.closeDispatch();
             stopClients(code, reason, messages);
             stopServer(messages, reason);
             shutdownReconnectScheduler();
@@ -496,13 +511,11 @@ public class WebsocketManager {
                 utils.debugLog("WebsocketManager 已销毁，忽略暂停请求");
                 return messages;
             }
+            // 先关闭分发门控，再停止连接：门控关闭后到达的报文不再进入协议处理
+            handleProtocolMessage.closeDispatch();
             stopClients(CLOSE_CODE_NORMAL, WebsocketConstantMessage.CLOSE_BY_RELOAD, messages);
-            if (!stopServer(messages, WebsocketConstantMessage.Server.RELOADING)) {
-                // 已中断 selector 线程但仍未确认退出：继续后续步骤（强制中止 RCON 能让阻塞的
-                // 回调退出），同时以进度消息明确告知，不假装已经停干净。
-                messages.add(Tool.format(
-                        WebsocketConstantMessage.Server.STOP_TIMEOUT, SERVER_STOP_JOIN_TIMEOUT_MILLIS));
-            }
+            // 停止未确认时 stopServer 会保留旧实例并自行追加超时消息，这里不再重复处理
+            stopServer(messages, WebsocketConstantMessage.Server.RELOADING);
             started = false;
             return messages;
         }
@@ -527,6 +540,8 @@ public class WebsocketManager {
                 return messages;
             }
             this.config = Objects.requireNonNull(newConfig, "newConfig");
+            // 恢复分发：暂停时关闭的门控在这里重新开放
+            handleProtocolMessage.openDispatch();
             restartClients(messages);
             restartServer(messages);
             started = true;

@@ -84,6 +84,37 @@ class RconClientTest {
     }
 
     @Test
+    @DisplayName("旧三参数构造器经连接工厂实际使用默认 Host（而不只是常量）")
+    void legacyConstructorUsesDefaultHostThroughFactory() {
+        AtomicReference<String> host = new AtomicReference<>();
+        // 包级构造器与公开三参构造器是同一条委托路径，只是换了连接工厂
+        RconClient legacy = new RconClient(LOGGER, 25575, "pw", (h, p, s) -> {
+            host.set(h);
+            return new FakeConnection();
+        });
+
+        legacy.connect();
+
+        assertEquals("127.0.0.1", host.get(), "三参构造器必须把默认 Host 传给连接工厂");
+        legacy.stop();
+    }
+
+    @Test
+    @DisplayName("建连抛非受检异常时客户端保持未连接，后续命令明确失败")
+    void connectUncheckedFailureLeavesClientDisconnected() {
+        RconClient client = client((host, port, password) -> {
+            throw new IllegalStateException("simulated unchecked failure");
+        });
+
+        assertThrows(IllegalStateException.class, client::connect);
+
+        assertFalse(client.isConnected(), "非受检异常后不得保留连接");
+        assertEquals(
+                RconException.Kind.DISCONNECTED,
+                assertThrows(RconException.class, () -> client.sendCommand("list")).getKind());
+    }
+
+    @Test
     @DisplayName("空白 Host 在构造阶段即被拒绝")
     void blankHostIsRejected() {
         assertThrows(

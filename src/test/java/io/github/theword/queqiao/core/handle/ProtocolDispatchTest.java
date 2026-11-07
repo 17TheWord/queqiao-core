@@ -16,10 +16,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Collections;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -380,5 +382,61 @@ class ProtocolDispatchTest {
 
         assertFalse(responseJson.contains(marker), "响应不得包含原始请求内容：" + responseJson);
         assertFalse(responseJson.contains("rawJsonMessage"), "响应不得包含 rawJsonMessage 字段：" + responseJson);
+    }
+
+    // ------------------------------------------------------------------
+    // 分发门控：暂停后到达的报文不得进入协议 Handler
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("关闭分发门控后报文不进入协议 Handler，重新开放后恢复")
+    void closedDispatchGateDropsMessages() {
+        AtomicInteger invocations = new AtomicInteger();
+        HandleProtocolMessage dispatcher = PlatformStubs.newDispatcher(
+                LOGGER,
+                GSON,
+                PlatformStubs.noopPlatformContext(),
+                command -> {
+                    invocations.incrementAndGet();
+                    return "ok";
+                });
+        String request = "{\"api\":\"send_rcon_command\",\"data\":{\"command\":\"list\"}}";
+
+        assertNotNull(dispatcher.handleHttpJson(request), "门控开启时应正常处理");
+        assertEquals(1, invocations.get());
+
+        dispatcher.closeDispatch();
+
+        assertNull(dispatcher.handleHttpJson(request), "门控关闭时不应产生响应");
+        assertEquals(1, invocations.get(), "门控关闭后到达的报文不得进入协议 Handler");
+
+        dispatcher.openDispatch();
+
+        assertNotNull(dispatcher.handleHttpJson(request), "重新开放后应恢复处理");
+        assertEquals(2, invocations.get());
+    }
+
+    @Test
+    @DisplayName("关闭分发门控幂等，重复关闭/重复开放不影响行为")
+    void dispatchGateIsIdempotent() {
+        AtomicInteger invocations = new AtomicInteger();
+        HandleProtocolMessage dispatcher = PlatformStubs.newDispatcher(
+                LOGGER,
+                GSON,
+                PlatformStubs.noopPlatformContext(),
+                command -> {
+                    invocations.incrementAndGet();
+                    return "ok";
+                });
+        String request = "{\"api\":\"send_rcon_command\",\"data\":{\"command\":\"list\"}}";
+
+        dispatcher.closeDispatch();
+        dispatcher.closeDispatch();
+        assertNull(dispatcher.handleHttpJson(request));
+
+        dispatcher.openDispatch();
+        dispatcher.openDispatch();
+        assertNotNull(dispatcher.handleHttpJson(request));
+        assertEquals(1, invocations.get(), "只有门控开启期间的那一条报文应被处理");
     }
 }

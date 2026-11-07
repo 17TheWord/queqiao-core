@@ -226,6 +226,71 @@ class QueQiaoRuntimeRconReloadTest {
     }
 
     @Test
+    @DisplayName("RCON 切换期间命令不会发往旧 Host，而是返回 DISCONNECTED")
+    void commandDuringRconSwitchIsRejectedInsteadOfReachingOldHost() throws Exception {
+        try (FakeRconServer oldServer = new FakeRconServer("from-old", false, false);
+             // 卡住认证：让"旧客户端已摘除、新客户端未发布"的窗口稳定可观察
+             FakeRconServer newServer = new FakeRconServer("from-new", true, false);
+             RuntimeConfigFixture fixture = new RuntimeConfigFixture("")) {
+
+            QueQiaoRuntime created = startRuntime(fixture, true, "127.0.0.1", oldServer.getPort());
+            assertEquals("from-old", created.sendRconCommand("warmup"));
+            assertEquals(1, oldServer.getCommandCount(), "前置命令应已到达旧 Server");
+
+            fixture.write(RuntimeConfigFixture.yaml(
+                    true, webSocketPort, true, "127.0.0.1", newServer.getPort(), RCON_PASSWORD));
+
+            ExecutorService executor = Executors.newSingleThreadExecutor();
+            try {
+                Future<?> reloading = executor.submit(() -> created.reload());
+                assertTrue(newServer.awaitAuthenticationStarted(), "重载应已开始连接新 RCON");
+
+                // 切换窗口：旧客户端已被摘除并停止，新客户端尚未发布
+                RconException failure = assertThrows(
+                        RconException.class, () -> created.sendRconCommand("during-switch"));
+                assertEquals(
+                        RconException.Kind.DISCONNECTED,
+                        failure.getKind(),
+                        "切换期间必须返回不可用，而不是把命令打到旧主机");
+                assertEquals(1, oldServer.getCommandCount(), "切换期间不得把命令发往旧 Host");
+
+                newServer.releaseAuthentication();
+                reloading.get(10, TimeUnit.SECONDS);
+
+                assertEquals("from-new", created.sendRconCommand("after-switch"), "切换完成后应使用新客户端");
+            } finally {
+                executor.shutdownNow();
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("新 RCON 连不上时保持不可用，不回退到旧客户端")
+    void reloadWithUnreachableRconKeepsUnavailable() throws Exception {
+        int closedPort = findFreePort();
+        try (FakeRconServer oldServer = new FakeRconServer("from-old", false, false);
+             RuntimeConfigFixture fixture = new RuntimeConfigFixture("")) {
+
+            QueQiaoRuntime created = startRuntime(fixture, true, "127.0.0.1", oldServer.getPort());
+            assertEquals("from-old", created.sendRconCommand("warmup"));
+
+            fixture.write(RuntimeConfigFixture.yaml(
+                    true, webSocketPort, true, "127.0.0.1", closedPort, RCON_PASSWORD));
+
+            created.reload();
+
+            RconException failure = assertThrows(RconException.class, () -> created.sendRconCommand("list"));
+            assertEquals(
+                    RconException.Kind.DISCONNECTED,
+                    failure.getKind(),
+                    "新地址连不上时必须保持不可用，不得回退旧客户端");
+            assertEquals(1, oldServer.getCommandCount(), "旧客户端已停止，不应再收到命令");
+            assertTrue(oldServer.awaitClosedConnections(1), "旧连接必须被中止");
+            assertTrue(awaitPortAccepting(webSocketPort), "RCON 失败不应影响 WebSocket");
+        }
+    }
+
+    @Test
     @DisplayName("配置非法时 Reload 失败，但 WebSocket 按原配置恢复且旧 RCON 保持可用")
     void reloadWithInvalidConfigRestoresEndpoints() throws Exception {
         try (FakeRconServer rcon = new FakeRconServer("from-A", false, false);

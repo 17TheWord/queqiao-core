@@ -71,10 +71,24 @@ public final class QueQiaoRuntime {
     private final AtomicReference<RuntimeState> state = new AtomicReference<>(RuntimeState.NEW);
 
     /**
-     * 串行化 {@code start()} / {@code reload()} / {@code shutdown()} 的生命周期锁。
-     * 它不替代 Config / WebSocket / RCON 各自的同步机制。
+     * 状态锁：只用于"检查状态 + 迁移状态"这类瞬时操作。
+     *
+     * <p><b>不得</b>在持有它时执行配置文件 IO、RCON 连接、WebSocket 停止/启动或线程 join。
+     * 长操作由 {@link #operationLock} 串行化。
      */
     private final Object lifecycleLock = new Object();
+
+    /**
+     * 操作锁：串行化 {@code start()} / {@code reload()} / {@code shutdown()} 的<b>长操作</b>
+     *
+     * <p>它保证"配置加载、RCON 切换、WebSocket 停止/启动"这些慢步骤之间不会交错，
+     * 也保证 {@code shutdown()} 不会与尚未完成的 {@code reload()} 并发销毁组件
+     * （关闭会等当前操作结束后再开始清理）。
+     *
+     * <p>与 {@link #lifecycleLock} 的获取顺序固定为 {@code operationLock → lifecycleLock}，
+     * 不存在反向路径，因此不会死锁。
+     */
+    private final Object operationLock = new Object();
 
     // ------------------------------------------------------------------
     // 构造后不再变化的字段：用 final 保证安全发布
@@ -141,6 +155,15 @@ public final class QueQiaoRuntime {
     private final Object rconLifecycleLock = new Object();
 
     private volatile RconClient rconClient;
+
+    /**
+     * RCON 切换代次
+     *
+     * <p>每次"摘除旧引用"时递增。切换流程在锁外建连完成后，只有代次未变时才允许发布
+     * 新客户端——避免迟到的切换结果覆盖更新的状态（例如已进入关闭流程）。
+     * 由 {@link #rconLifecycleLock} 保护。
+     */
+    private int rconGeneration;
 
     private volatile JsonElement messagePrefixJsonElement;
 
@@ -526,11 +549,13 @@ public final class QueQiaoRuntime {
      * 也不会出现"抛异常却留下半启动 Runtime"的状态。
      */
     public void start() {
-        synchronized (lifecycleLock) {
-            if (state.get() != RuntimeState.NEW) {
-                throw new IllegalStateException("QueQiaoRuntime 当前状态不允许启动: " + state.get());
+        synchronized (operationLock) {
+            synchronized (lifecycleLock) {
+                if (state.get() != RuntimeState.NEW) {
+                    throw new IllegalStateException("QueQiaoRuntime 当前状态不允许启动: " + state.get());
+                }
+                state.set(RuntimeState.STARTING);
             }
-            state.set(RuntimeState.STARTING);
 
             try {
                 doStart();
@@ -601,9 +626,11 @@ public final class QueQiaoRuntime {
      * @return 重载结果，携带本应展示给用户的进度消息
      */
     public ReloadResult reload() {
-        synchronized (lifecycleLock) {
-            if (state.get() != RuntimeState.RUNNING) {
-                throw new IllegalStateException("QueQiaoRuntime 当前状态不允许 reload: " + state.get());
+        synchronized (operationLock) {
+            synchronized (lifecycleLock) {
+                if (state.get() != RuntimeState.RUNNING) {
+                    throw new IllegalStateException("QueQiaoRuntime 当前状态不允许 reload: " + state.get());
+                }
             }
 
             List<String> messages = new ArrayList<>();
@@ -624,7 +651,9 @@ public final class QueQiaoRuntime {
                 //   1. finally 恢复 WebSocket 时，实际生效的 RCON 客户端一定与当前配置一致；
                 //   2. 旧客户端的在途命令会被立即中止，从而释放占着解码线程的协议回调——
                 //      正是它让 selector 卡在缓冲区等待上（见 WebsocketManager#suspend 的有界等待）。
-                restartRconClient();
+                if (!switchRconClient(config.snapshot())) {
+                    logger.info("Rcon 已根据新配置禁用并关闭连接");
+                }
                 messagePrefixJsonElement = initMessagePrefixJsonObject(config.get(ConfigKeys.MESSAGE_PREFIX));
                 platformContext.getTranslationService()
                         .reload(config.get(ConfigKeys.ENABLE_TRANSLATION));
@@ -658,17 +687,19 @@ public final class QueQiaoRuntime {
      * {@code NEW} 与 {@code FAILED} 保持原状态不变（因此"先 shutdown 再 start"仍然可行），
      * {@code STOPPED} / {@code STOPPING} 为 no-op。
      *
-     * <p>与 {@link #start()} 共享生命周期锁，不会中断进行中的启动。
+     * <p>与 {@link #start()} 共享 {@link #operationLock}：不会中断进行中的启动，
+     * 也会等待尚未完成的 {@code reload()} 结束后才开始清理，避免并发销毁组件。
      */
     public void shutdown() {
-        synchronized (lifecycleLock) {
-            RuntimeState current = state.get();
-            if (current != RuntimeState.RUNNING) {
-                // NEW / FAILED / STOPPED / STOPPING 均为 no-op（STARTING 因共享同一把锁而不可达）
-                return;
+        synchronized (operationLock) {
+            synchronized (lifecycleLock) {
+                if (state.get() != RuntimeState.RUNNING) {
+                    // NEW / FAILED / STOPPED / STOPPING 均为 no-op
+                    return;
+                }
+                state.set(RuntimeState.STOPPING);
             }
 
-            state.set(RuntimeState.STOPPING);
             try {
                 shutdownResources();
             } finally {
@@ -699,6 +730,8 @@ public final class QueQiaoRuntime {
         synchronized (rconLifecycleLock) {
             client = rconClient;
             rconClient = null;
+            // 递增代次：任何仍在进行的切换都不得再把客户端发布回来
+            rconGeneration++;
         }
         if (client != null) {
             // 关闭在锁外执行：stop() 只关闭 Socket、不等待在途命令，
@@ -743,54 +776,63 @@ public final class QueQiaoRuntime {
      * 其它功能（含 WebSocket）照常启动。
      */
     private void initRconClient() {
-        ConfigSnapshot configSnapshot = config.snapshot();
-        if (!configSnapshot.valueOf(ConfigKeys.Rcon.ENABLE)) {
-            synchronized (rconLifecycleLock) {
-                rconClient = null;
-            }
+        if (!switchRconClient(config.snapshot())) {
             logger.info("Rcon 未启用，跳过 Rcon 客户端初始化");
-            return;
-        }
-
-        RconClient client = createRconClient(configSnapshot);
-        client.connect();
-        synchronized (rconLifecycleLock) {
-            rconClient = client;
         }
     }
 
     /**
      * 按当前配置替换 RCON 客户端
      *
-     * <p>顺序：读取配置 → 锁外建立新连接 → 短暂加锁替换引用 → 锁外中止旧客户端。
+     * <p>顺序（锁内只做引用操作，锁外做网络操作）：
+     * <ol>
+     *     <li>锁内<b>摘除</b>旧引用并递增代次——此后 {@code sendRconCommand()} 一律得到
+     *         {@code DISCONNECTED}，绝不会再使用旧客户端；</li>
+     *     <li>锁外停止旧客户端（不等待在途命令）；</li>
+     *     <li>锁外建立新连接；</li>
+     *     <li>锁内按代次发布——只有本次切换仍然有效时才发布。</li>
+     * </ol>
      *
-     * <p>旧客户端在新客户端就绪之前仍然有效，因此"新地址连不上"不会让 RCON 能力
-     * 凭空消失；但引用一旦替换，后续命令绝不会再发往旧地址——新客户端未连接时
-     * 请求得到明确的不可用结果。
+     * <p>连接失败（IO / 认证）只让新客户端保持未连接状态，<b>不回退</b>到旧客户端；
+     * 非受检异常原样抛给调用方，此时旧客户端已停止、新客户端未发布，RCON 保持不可用。
      *
-     * <p>中止旧客户端不等待在途命令（见 {@code RconClient#stop()}），因此本方法不会
-     * 阻塞正在等待 Minecraft 主线程返回的 RCON 请求。
+     * @param snapshot 本次切换使用的配置快照
+     * @return true 表示配置启用了 RCON（已尝试发布新客户端）；false 表示已禁用
      */
-    private void restartRconClient() {
-        ConfigSnapshot configSnapshot = config.snapshot();
-        RconClient replacement = null;
-        if (configSnapshot.valueOf(ConfigKeys.Rcon.ENABLE)) {
-            replacement = createRconClient(configSnapshot);
-            replacement.connect();
-        }
-
+    private boolean switchRconClient(ConfigSnapshot snapshot) {
         RconClient previous;
+        int generation;
         synchronized (rconLifecycleLock) {
             previous = rconClient;
-            rconClient = replacement;
+            rconClient = null;
+            generation = ++rconGeneration;
         }
 
         if (previous != null) {
+            // 锁外停止：不等待在途命令，也不会把 Socket 操作放进临界区
             previous.stop();
-            if (replacement == null) {
-                logger.info("Rcon 已根据新配置禁用并关闭连接");
+        }
+
+        if (!snapshot.valueOf(ConfigKeys.Rcon.ENABLE)) {
+            return false;
+        }
+
+        RconClient replacement = createRconClient(snapshot);
+        // 锁外建连：IO / 认证失败只记录日志，客户端保持未连接；非受检异常向上抛出
+        replacement.connect();
+
+        boolean published;
+        synchronized (rconLifecycleLock) {
+            published = generation == rconGeneration;
+            if (published) {
+                rconClient = replacement;
             }
         }
+        if (!published) {
+            // 期间已进入关闭流程或发起了新的切换：丢弃这个迟到的客户端
+            replacement.stop();
+        }
+        return true;
     }
 
     private RconClient createRconClient(ConfigSnapshot source) {

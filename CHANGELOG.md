@@ -201,6 +201,11 @@ public abstract class CommandExecutionContext<NCS> {
   供 reload 在切换 RCON 期间暂停接入；幂等，且不设置永久销毁标记（那仍只属于 `stop()`）。
   停止是**有界**的：最多等待 selector 线程 1 秒，超时则中断该线程，绝不会无限等待；
   若仍未确认退出，会以进度消息与 WARN 日志明确告知，而不是假装已经停干净。
+  此时**保留旧 Server 引用且不启动新 Server**（端口可能仍被占用），
+  下一次 `restart()` / `stop()` 会再次尝试停止它，避免实例与端口永久失联。
+- **`HandleProtocolMessage#closeDispatch()` / `openDispatch()`**：协议分发门控。
+  暂停时先关门控再停连接，门控关闭后到达的报文不再进入协议 Handler（也不回执）；
+  检查与"进入"在同一临界区内完成，但处理在锁外，因此关闭不会等待在途请求。
 - **`WsServer#stopBounded(int, String)` / `WsServer#isTerminated()`**：
   把"有界停止 + 中断兜底"封装在服务端自身，并能如实回答"selector 线程是否已退出"
   （监听通道的释放与它绑定），不会在启动窗口或超时场景里误报"已终止"。
@@ -274,6 +279,9 @@ public abstract class CommandExecutionContext<NCS> {
 
 ### 变更
 
+- **`HandleProtocolMessage#handleWebsocketJson` / `#handleHttpJson` 可能返回 `null`**：
+  分发门控关闭期间返回 `null`（表示"不回执"）。直接调用这两个入口的代码需要判空，
+  不要把它当成合法 JSON 继续解析。
 - **`RconClient` 的关闭语义改为"快速中止"**：`stop()` 不再等待在途命令结束，且停止后的实例
   视为已废弃——不再接受 `connect()` 与 `sendCommand()`，需要重新连接时由 `QueQiaoRuntime`
   创建新实例。这样既消除了死锁，也避免"同一实例在停止与重连之间来回切换"引入新的竞态。
@@ -382,8 +390,11 @@ public abstract class CommandExecutionContext<NCS> {
 
 - **Reload 期间 RCON 切换与 WebSocket 请求交错**：`reload()` 现在按
   "暂停 WebSocket 接入 → 加载配置 → **切换 RCON** → 更新其它组件 → 按新配置恢复"执行，
-  切换过程中不会再有新请求进入 Runtime；旧 RCON 的关闭也不需要等待在途命令。
+  切换过程中不会再有新请求进入 Runtime（暂停时先关闭分发门控，关闭握手期间到达的报文
+  也不会进入协议 Handler）；旧 RCON 的关闭也不需要等待在途命令。
   RCON 切换紧跟配置加载，保证 WebSocket 恢复时使用的客户端已与当前配置一致。
+  **切换窗口内 `send_rcon_command` 返回 503**：旧客户端会先被摘除并停止，
+  命令不会打到旧主机；新连接失败时保持不可用，不会回退到旧客户端。
   Endpoint 的恢复位于 `finally`：配置非法、RCON 连不上或其它步骤失败都不会让
   WebSocket 永久停服，恢复本身的异常会与原始异常一并保留（作为 suppressed）。
 - **WebSocket Server 停止可能无限等待**：停止路径改用有界等待 + 中断兜底，

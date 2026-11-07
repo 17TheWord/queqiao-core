@@ -49,6 +49,7 @@ public final class FakeRconServer implements AutoCloseable {
     private final CountDownLatch authenticationStarted = new CountDownLatch(1);
     private final CountDownLatch authenticationReleased = new CountDownLatch(1);
     private final BlockingQueue<String> receivedCommands = new LinkedBlockingQueue<>();
+    private final AtomicInteger commandCount = new AtomicInteger();
     private final AtomicInteger closedConnections = new AtomicInteger();
     private final AtomicReference<Socket> activeSocket = new AtomicReference<>();
     private final Thread serverThread;
@@ -88,6 +89,13 @@ public final class FakeRconServer implements AutoCloseable {
 
     public boolean awaitAuthenticationStarted() throws InterruptedException {
         return authenticationStarted.await(WAIT_SECONDS, TimeUnit.SECONDS);
+    }
+
+    /**
+     * @return 累计收到的命令条数（用于断言"某段时间内没有新命令到达"）
+     */
+    public int getCommandCount() {
+        return commandCount.get();
     }
 
     public void releaseAuthentication() {
@@ -171,6 +179,7 @@ public final class FakeRconServer implements AutoCloseable {
                 return;
             }
             receivedCommands.add(command.payload);
+            commandCount.incrementAndGet();
             if (stallCommands) {
                 // 不返回响应，但继续监视对端是否关闭：这样"连接被中止"能在毫秒级被观察到。
                 awaitPeerClose(input);

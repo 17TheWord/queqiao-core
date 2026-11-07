@@ -43,6 +43,15 @@ public class WebsocketConstantMessage {
         public static final String STOP_TIMEOUT =
                 "Websocket Server 未在 {} ms 内确认停止，已中断 selector 线程；若其仍未退出，端口可能仍在监听。";
 
+        /**
+         * 停止未确认时跳过启动新 Server 的提示
+         *
+         * <p>此时端口可能仍被旧实例占用，直接 bind 只会静默失败，
+         * 因此保留旧实例并等待下一次 reload / 停止重试。
+         */
+        public static final String RESTART_SKIPPED =
+                "旧 Websocket Server 尚未确认停止，本次不启动新的 Server；请稍后重试。";
+
         public static final String BROADCAST_MESSAGE = "向所有客户端广播消息：{}";
         public static final String RELOADING = "Websocket Server 正在重载";
         public static final String RELOADED = "Websocket Server 重载完毕";
