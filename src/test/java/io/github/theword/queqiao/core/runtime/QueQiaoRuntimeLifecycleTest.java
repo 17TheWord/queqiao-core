@@ -174,7 +174,7 @@ class QueQiaoRuntimeLifecycleTest {
     // ------------------------------------------------------------------
 
     @Test
-    @DisplayName("start 后可得到 WebsocketManager，shutdown 释放全部资源且幂等")
+    @DisplayName("start 后可得到 WebsocketManager，shutdown 关闭调度器、清空引用且幂等")
     void shutdownReleasesStartedResourcesAndIsIdempotent() throws Exception {
         try (DisabledConfigFixture ignored = new DisabledConfigFixture()) {
             QueQiaoRuntime created = newRuntime();

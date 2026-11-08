@@ -152,7 +152,7 @@ class QueQiaoRuntimeShutdownTest {
     }
 
     @Test
-    @DisplayName("全部资源正常停止时关闭失败列表为空")
+    @DisplayName("正常关闭时未观察到明确的资源停止失败（空列表不代表连接已完全释放）")
     void shutdownWithoutFailuresReportsEmptyList() throws Exception {
         try (RuntimeConfigFixture fixture = new RuntimeConfigFixture(RuntimeConfigFixture.yaml(
                 false, findFreePort(), false, "127.0.0.1", 25575, RCON_PASSWORD))) {
@@ -163,7 +163,12 @@ class QueQiaoRuntimeShutdownTest {
             runtime.shutdown();
 
             assertEquals(RuntimeState.STOPPED, runtime.getState());
-            assertTrue(runtime.getShutdownFailures().isEmpty(), "正常关闭不应产生失败记录，实际=" + runtime.getShutdownFailures());
+            // 语义边界：空列表 = "没有观察到明确的停止失败"。
+            // WebSocket Client 采用异步 close，不等待对端握手完成，因此这里不能断言
+            // "所有连接都已完全关闭"——那件事本 API 无法证明。
+            assertTrue(
+                    runtime.getShutdownFailures().isEmpty(),
+                    "正常关闭不应观察到明确失败，实际=" + runtime.getShutdownFailures());
         }
     }
 

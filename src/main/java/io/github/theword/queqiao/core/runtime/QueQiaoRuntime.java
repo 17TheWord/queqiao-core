@@ -157,10 +157,13 @@ public final class QueQiaoRuntime {
     private volatile RconState rconState = RconState.DISABLED;
 
     /**
-     * 最近一次关闭流程中"未能确认停止"的资源说明
+     * 最近一次关闭流程中<b>观察到的</b>明确失败或未能确认的停止结果
      *
-     * <p>空列表表示所有受管资源都确认停止；非空表示关闭流程<b>已执行完毕</b>，
-     * 但下列资源未能确认释放（详见对应 ERROR 日志）。
+     * <p>空列表表示：本次关闭流程<b>没有观察到明确的资源停止失败</b>。
+     * 它<b>不</b>表示所有资源都已确认释放——例如 WebSocket Client 采用异步 close，
+     * 关闭请求发出后不等对端握手完成，因此"没有失败记录"不等于"连接已完全关闭"。
+     *
+     * <p>非空表示关闭流程<b>已执行完毕</b>，但下列资源未能确认停止（详见对应 ERROR 日志）。
      *
      * <p>存在的原因：{@link RuntimeState#STOPPED} 只能表达"关闭流程结束"，
      * 不能表达"所有底层资源都已释放"。本字段是二者的最小区分手段，
@@ -733,9 +736,13 @@ public final class QueQiaoRuntime {
      * {@code NEW} 与 {@code FAILED} 保持原状态不变（因此"先 shutdown 再 start"仍然可行），
      * {@code STOPPED} / {@code STOPPING} 为 no-op。
      *
+     * <p><b>关闭结果语义</b>：{@link RuntimeState#STOPPED} 表示<b>关闭流程已执行完毕</b>，
+     * 不代表所有底层资源都已确认释放。各资源的确认程度不同（详见 {@link #shutdownResources()}），
+     * 其中 WebSocket Client 采用异步 close，不等待对端关闭握手完成。
+     *
      * <p><b>各资源独立清理</b>：某项失败不会阻止其余资源继续停止。失败会记 ERROR 日志，
-     * 并可通过 {@link #getShutdownFailures()} 读取——{@code STOPPED} 只说明关闭流程结束，
-     * 不代表所有资源都确认释放。
+     * 并可通过 {@link #getShutdownFailures()} 读取；该列表为空只表示
+     * <b>没有观察到明确的资源停止失败</b>。
      *
      * <p>与 {@link #start()} 共享 {@link #operationLock}：不会中断进行中的启动，
      * 也会等待尚未完成的 {@code reload()} 结束后才开始清理，避免并发销毁组件。
@@ -759,7 +766,7 @@ public final class QueQiaoRuntime {
             }
             // STOPPED 只表示"关闭流程执行完毕"；资源是否真的全部释放由 shutdownFailures 表达
             if (shutdownFailures.isEmpty()) {
-                logger.info("鹊桥已关闭");
+                logger.info("鹊桥关闭流程已执行完毕（未观察到明确的资源停止失败）");
             } else {
                 logger.error("鹊桥关闭流程已执行完毕，但以下资源未确认停止：{}", shutdownFailures);
             }
@@ -771,8 +778,20 @@ public final class QueQiaoRuntime {
      * 顺序为状态采集器 → WebSocket → RCON → 翻译服务。
      *
      * <p><b>各步骤相互隔离</b>：任何一步抛出异常或报告失败，都不会阻止后续步骤执行。
-     * 失败会记录 ERROR 日志并汇总到 {@link #getShutdownFailures()}——因为
-     * "关闭流程执行完毕"（{@link RuntimeState#STOPPED}）与"所有资源都已释放"是两件事。
+     * 失败会记录 ERROR 日志并汇总到 {@link #getShutdownFailures()}。
+     *
+     * <p><b>各资源的确认程度不同</b>，这正是"关闭流程执行完毕"不等于"所有资源已释放"的原因：
+     * <ul>
+     *     <li>{@code ServerStatusCollector}：只确认 {@code stopRefreshScheduler()} 正常返回，
+     *         不推断其内部任务已瞬间终止；</li>
+     *     <li>{@code WebsocketManager}：只确认 WebSocket Server 的 selector 线程已退出
+     *         （{@link WebsocketManager.StopResult#isServerStopped()}）；
+     *         <b>不</b>保证 WebSocket Client 的关闭握手已完成（那是异步 close）；</li>
+     *     <li>{@code RconClient}：只确认 {@code abort()} 成功且连接引用被清除
+     *         （{@code isConnected()} 为 false），不推断对端已处理完关闭；</li>
+     *     <li>{@code TranslationService}：只确认 {@code disable()} 正常返回，
+     *         不推断平台外部资源状态。</li>
+     * </ul>
      *
      * <p>每一项自身幂等，因此本方法可被"启动失败回滚"与"正常关闭"共用。
      */
@@ -861,7 +880,13 @@ public final class QueQiaoRuntime {
     }
 
     /**
-     * @return 最近一次关闭流程中未能确认停止的资源说明；空列表表示全部确认停止
+     * 返回关闭过程中观察到的明确失败或未能确认的停止结果
+     *
+     * <p>空列表只代表<b>没有观察到明确的资源停止失败</b>，不代表所有资源都已释放：
+     * 各资源的确认程度本就不同（见 {@link #shutdownResources()}），
+     * 其中 WebSocket Client 是异步关闭，不会等待对端关闭握手完成。
+     *
+     * @return 未能确认停止的资源说明；空列表表示未观察到明确失败
      */
     public List<String> getShutdownFailures() {
         return shutdownFailures;

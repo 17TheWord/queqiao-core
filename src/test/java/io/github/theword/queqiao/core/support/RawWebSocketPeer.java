@@ -288,6 +288,9 @@ public final class RawWebSocketPeer implements AutoCloseable {
         }
 
         private void closeQuietly() {
+            // 先释放等待中的帧循环，再关闭 Socket：Socket 关闭不会唤醒 CountDownLatch，
+            // 若测试断言失败后直接 close()，连接线程会永久卡在 awaitRelease() 上。
+            closeReleased.countDown();
             RawWebSocketPeer.closeQuietly(socket);
         }
 

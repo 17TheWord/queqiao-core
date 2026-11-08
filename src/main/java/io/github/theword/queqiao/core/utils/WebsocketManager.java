@@ -489,18 +489,23 @@ public class WebsocketManager {
     }
 
     /**
-     * 永久停止，并返回"Server 是否确认停止"的明确结果
+     * 永久停止，并返回"WebSocket Server 是否确认终止"的明确结果
      *
      * <p>与 {@link #stop(int, String)} 的差别只在返回值：{@code stop} 的进度消息里
      * 虽然带有超时提示，但调用方只能靠解析文本判断成败。需要据此上报关闭结果的
      * 调用方（例如 {@code QueQiaoRuntime#shutdownResources()}）应使用本方法。
+     *
+     * <p><b>对 WebSocket Client 的语义</b>：只发出停止请求并禁止后续自动重连
+     * （{@code WsClient#stopWithoutReconnect} → {@code close(code, reason)}），
+     * <b>不等待</b>对端关闭握手完成，也不确认底层连接已完全释放。
+     * 因此返回值中的"成功"只覆盖 Server 侧。
      *
      * <p><b>停止未确认时不会丢弃引用</b>：{@code wsServer} 仍被保留，
      * 因此重复调用本方法会再次尝试停止旧实例（见 {@link #stopServer(List, String)}）。
      *
      * @param code   关闭码
      * @param reason 关闭原因
-     * @return 停止结果，包含"Server 是否确认停止"与进度消息
+     * @return 停止结果，包含"WebSocket Server 是否确认终止"与进度消息
      */
     public StopResult stopWithResult(int code, String reason) {
         synchronized (lifecycleLock) {
@@ -524,6 +529,9 @@ public class WebsocketManager {
      *
      * <p>只表达"这一次停止操作观察到的状态"，不承担历史实例管理：
      * 失败时旧 Server 引用仍留在 Manager 内，由下一次 {@code stop} / {@code restart} 重试。
+     *
+     * <p><b>范围限定</b>：本结果只描述 WebSocket <b>Server</b>，
+     * 不描述 WebSocket Client（Client 是异步关闭，见 {@link #stopWithResult(int, String)}）。
      */
     public static final class StopResult {
 
@@ -536,6 +544,11 @@ public class WebsocketManager {
         }
 
         /**
+         * WebSocket Server 是否不存在或已确认终止（selector 线程已退出）
+         *
+         * <p>只覆盖 Server：<b>不</b>表示所有 WebSocket Client 已完成关闭，
+         * 也不表示它们的关闭握手已经结束。
+         *
          * @return true 表示没有 Server，或已确认 selector 线程退出（端口已释放）
          */
         public boolean isServerStopped() {
