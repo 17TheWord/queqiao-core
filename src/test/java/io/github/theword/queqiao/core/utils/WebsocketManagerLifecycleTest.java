@@ -581,6 +581,33 @@ class WebsocketManagerLifecycleTest {
         manager.stop(1000, "test cleanup");
     }
 
+    @Test
+    @DisplayName("等待锁期间配置被禁用：旧配置读到的事件不得穿过门控")
+    void sendEventRejectsStaleEnableReadAcrossReload() throws Exception {
+        WebsocketManager manager = newManager(eventConfig());
+        CountingServer server = new CountingServer(findFreePort());
+        manager.start();
+        setWsServer(manager, server);
+
+        Object lock = lifecycleLockOf(manager);
+        Thread sender;
+        synchronized (lock) {
+            sender = new Thread(() -> manager.sendEvent(chatEvent()), "send-event-reload-race");
+            sender.setDaemon(true);
+            sender.start();
+            // 让发送线程进入 sendEvent 并阻塞在 lifecycleLock 上（此刻它还没有通过门控）
+            sender.join(300L);
+
+            // 模拟 reload：配置改为全局禁用，并按新配置恢复端点（同线程可重入 lifecycleLock）
+            manager.restart(disabledByGlobalSwitchConfig());
+            setWsServer(manager, server);
+        }
+        sender.join(5_000L);
+
+        assertFalse(sender.isAlive(), "发送线程应已完成");
+        assertEquals(0, server.broadcastCount(), "配置已禁用时不得分发，即使发送请求先到达");
+    }
+
     // ------------------------------------------------------------------
     // 辅助
     // ------------------------------------------------------------------
@@ -674,6 +701,13 @@ class WebsocketManagerLifecycleTest {
      */
     private static Config eventConfig() {
         return runtimeOf("enable: true\nwebsocket_server:\n  enable: false\nwebsocket_client:\n  enable: false\n");
+    }
+
+    /**
+     * 全局禁用：用于验证"配置开关与生命周期状态同临界区确定"
+     */
+    private static Config disabledByGlobalSwitchConfig() {
+        return runtimeOf("enable: false\nwebsocket_server:\n  enable: false\nwebsocket_client:\n  enable: false\n");
     }
 
     /**

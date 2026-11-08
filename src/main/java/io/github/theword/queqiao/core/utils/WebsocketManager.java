@@ -643,9 +643,10 @@ public class WebsocketManager {
     /**
      * 分发事件到所有接收方
      *
-     * <p><b>生命周期门控</b>：只接受"Manager 已启动且未销毁"时发起的事件。
-     * 状态检查与接收方快照获取在同一个 {@link #lifecycleLock} 临界区内完成，
-     * 因此 {@link #suspend()} / {@link #stop(int, String)} 与发送请求有明确的先后关系：
+     * <p><b>生命周期门控</b>：只接受"全局启用 + Manager 已启动且未销毁"时发起的事件。
+     * 全局开关（{@code ConfigKeys.ENABLE}）、生命周期状态与接收方快照在同一个
+     * {@link #lifecycleLock} 临界区内确定，因此 {@link #suspend()} /
+     * {@link #stop(int, String)} / {@link #restart(Config)} 与发送请求有明确的先后关系：
      * <ul>
      *     <li>发送先拿到锁并通过检查 → 该事件视为在停止之前已被接受，允许继续完成；</li>
      *     <li>停止先拿到锁并完成状态切换 → 之后到达的发送请求一律被拒绝。</li>
@@ -663,17 +664,14 @@ public class WebsocketManager {
      * @param event 事件
      */
     public void sendEvent(BaseEvent event) {
-        if (!this.config.get(ConfigKeys.ENABLE)) {
-            return;
-        }
-
         List<WsClient> wsClientSnapshot;
         WsServer wsServerSnapshot;
         synchronized (lifecycleLock) {
-            // 状态检查与快照必须同临界区：否则可能在"检查通过 → 取快照"之间被 suspend/stop 清空，
-            // 之后仍用旧快照发送，等于绕过了生命周期门控。
-            if (!started || destroyed) {
-                utils.debugLog("WebsocketManager 未启动或已销毁，事件未分发");
+            // 全局开关必须与生命周期状态、接收方快照在同一临界区确定：
+            // 若在锁外读取，reload 期间可能先读到旧配置的 enable=true，随后被挂起，
+            // 等配置已改为 false 且 restart() 恢复 started 之后再进锁，事件就会穿过门控。
+            if (!this.config.get(ConfigKeys.ENABLE) || !started || destroyed) {
+                utils.debugLog("WebsocketManager 未启用、未启动或已销毁，事件未分发");
                 return;
             }
             wsClientSnapshot = new ArrayList<>(wsClientList);
