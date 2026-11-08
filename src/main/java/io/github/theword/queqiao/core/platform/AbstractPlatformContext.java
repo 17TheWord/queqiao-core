@@ -33,6 +33,24 @@ import io.github.theword.queqiao.core.translation.TranslationService;
  * {@link #getDataDirectory()} 必须不晚于 Runtime {@code start()} 可用 ——
  * Core 从 {@code start()} 起开始使用它们。
  *
+ * <p><b>线程调用契约</b>
+ *
+ * <p>Core <b>不保证</b>通过本上下文调用的平台方法运行在服务端主线程或其它特定线程。
+ * 例如通过 WebSocket 接收的协议请求（{@code HandleProtocolMessage → ProtocolRouter → Api}）
+ * 可能<b>直接由 WebSocket 工作线程</b>进入平台 API，也可能来自服务端线程或其它调用线程。
+ *
+ * <p>因此<b>平台适配实现负责保证平台 API 的线程安全</b>。若某项操作要求在服务端主线程、
+ * Server Thread、Region Thread 或 Entity Thread 等特定执行上下文中执行，
+ * 平台实现必须自行完成相应调度 —— Core 不提供自动线程切换。
+ *
+ * <p>若平台实现采用异步调度，必须自行处理异步执行带来的返回值与结果语义：
+ * 不能在平台方法已经返回后才真正执行操作，却仍然返回 {@link PlatformResult#success}
+ * 之类的"已完成"结果；也不能假定异步任务在本方法返回前已经完成。
+ *
+ * <p>不同平台的线程约束并不相同（Bukkit / Spigot / Paper 的部分 API 要求主线程，
+ * Folia 要求对应 Region 或 Entity 线程，Fabric / Forge / NeoForge 的部分游戏状态操作
+ * 要求在 Server Thread），Core 不假设存在统一的调度方式。
+ *
  * @param <S> 服务端实例类型
  * @param <C> 消息组件类型
  * @param <P> 玩家类型

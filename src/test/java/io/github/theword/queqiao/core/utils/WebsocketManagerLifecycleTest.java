@@ -3,6 +3,7 @@ package io.github.theword.queqiao.core.utils;
 import io.github.theword.queqiao.core.config.ConfigKeys;
 import io.github.theword.queqiao.core.config.schema.ConfigRegistry;
 import io.github.theword.queqiao.core.config.Config;
+import io.github.theword.queqiao.core.event.PlayerChatEvent;
 import io.github.theword.queqiao.core.handle.HandleProtocolMessage;
 import io.github.theword.queqiao.core.support.PlatformStubs;
 import io.github.theword.queqiao.core.websocket.WsClient;
@@ -491,6 +492,96 @@ class WebsocketManagerLifecycleTest {
     }
 
     // ------------------------------------------------------------------
+    // 出站事件的生命周期门控
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("未启动时 sendEvent 不分发")
+    void sendEventRejectedBeforeStart() throws Exception {
+        WebsocketManager manager = newManager(eventConfig());
+        CountingServer server = new CountingServer(findFreePort());
+        try {
+            // 直接塞入接收方：确保"不发"来自状态检查，而不是"没有接收方"
+            setWsServer(manager, server);
+
+            manager.sendEvent(chatEvent());
+
+            assertEquals(0, server.broadcastCount(), "未启动的 Manager 不得分发事件");
+        } finally {
+            manager.stop(1000, "test cleanup");
+        }
+    }
+
+    @Test
+    @DisplayName("启动后可分发；suspend 后拒绝；restart 恢复后重新允许")
+    void sendEventFollowsStartSuspendRestart() throws Exception {
+        WebsocketManager manager = newManager(eventConfig());
+        CountingServer server = new CountingServer(findFreePort());
+        try {
+            manager.start();
+            setWsServer(manager, server);
+            manager.sendEvent(chatEvent());
+            assertEquals(1, server.broadcastCount(), "启动后应正常分发");
+
+            manager.suspend();
+            // 再次塞入接收方：此时"不发"必须由 started=false 决定
+            setWsServer(manager, server);
+            manager.sendEvent(chatEvent());
+            assertEquals(1, server.broadcastCount(), "suspend 之后不得分发");
+
+            manager.restart(eventConfig());
+            setWsServer(manager, server);
+            manager.sendEvent(chatEvent());
+            assertEquals(2, server.broadcastCount(), "restart 恢复后应重新允许分发");
+        } finally {
+            manager.stop(1000, "test cleanup");
+        }
+    }
+
+    @Test
+    @DisplayName("永久 stop 之后 sendEvent 不再分发")
+    void sendEventRejectedAfterStop() throws Exception {
+        WebsocketManager manager = newManager(eventConfig());
+        CountingServer server = new CountingServer(findFreePort());
+        manager.start();
+        setWsServer(manager, server);
+
+        manager.stop(1000, "test stop");
+        setWsServer(manager, server);
+        manager.sendEvent(chatEvent());
+
+        assertEquals(0, server.broadcastCount(), "销毁之后不得分发事件");
+    }
+
+    @Test
+    @DisplayName("sendEvent 在持有 lifecycleLock 期间无法完成分发（状态检查与快照同临界区）")
+    void sendEventAcquiresLifecycleLockBeforeDispatch() throws Exception {
+        WebsocketManager manager = newManager(eventConfig());
+        CountingServer server = new CountingServer(findFreePort());
+        manager.start();
+        setWsServer(manager, server);
+
+        Object lock = lifecycleLockOf(manager);
+        Thread sender;
+        synchronized (lock) {
+            sender = new Thread(() -> manager.sendEvent(chatEvent()), "send-event-probe");
+            sender.setDaemon(true);
+            sender.start();
+            sender.join(300L);
+            // 说明发送路径必须先进入 lifecycleLock 才能取快照/分发；
+            // "检查与快照在同一临界区"由实现中的单个 synchronized 块保证，无法在不加生产钩子的前提下单独观测
+            assertTrue(sender.isAlive(), "sendEvent 必须阻塞在 lifecycleLock 上");
+            assertEquals(0, server.broadcastCount(), "持锁期间不应完成分发");
+        }
+
+        sender.join(5_000L);
+        assertFalse(sender.isAlive(), "释放锁后 sendEvent 应完成");
+        assertEquals(1, server.broadcastCount(), "状态检查通过后应正常分发");
+
+        manager.stop(1000, "test cleanup");
+    }
+
+    // ------------------------------------------------------------------
     // 辅助
     // ------------------------------------------------------------------
 
@@ -579,10 +670,61 @@ class WebsocketManagerLifecycleTest {
     }
 
     /**
+     * 全局启用、但两个传输层都禁用：验证出站事件门控不需要真实端点
+     */
+    private static Config eventConfig() {
+        return runtimeOf("enable: true\nwebsocket_server:\n  enable: false\nwebsocket_client:\n  enable: false\n");
+    }
+
+    /**
+     * 用于触发 sendEvent 的最小事件
+     */
+    private static PlayerChatEvent chatEvent() {
+        return new PlayerChatEvent(null, "", "", "hello");
+    }
+
+    /**
+     * 读取 Manager 的 lifecycleLock（验证"发送必须先取得该锁"）
+     */
+    private static Object lifecycleLockOf(WebsocketManager manager) throws Exception {
+        Field field = WebsocketManager.class.getDeclaredField("lifecycleLock");
+        field.setAccessible(true);
+        return field.get(manager);
+    }
+
+    /**
+     * 只统计广播次数的 Server 替身
+     *
+     * <p>不启动、不绑定端口：仅用于验证 {@code sendEvent} 是否真的把事件交给了 Server。
+     */
+    private static final class CountingServer extends WsServer {
+
+        private final AtomicInteger broadcasts = new AtomicInteger();
+
+        private CountingServer(int port) {
+            super(new InetSocketAddress("127.0.0.1", port), LOGGER, HANDLE_PROTOCOL_MESSAGE, "Server", "", true);
+        }
+
+        @Override
+        public void broadcast(String text) {
+            broadcasts.incrementAndGet();
+        }
+
+        @Override
+        public boolean stopBounded(int timeoutMillis, String reason) {
+            // 未启动的实例没有 selector 线程，直接报告"已终止"
+            return true;
+        }
+
+        private int broadcastCount() {
+            return broadcasts.get();
+        }
+    }
+
+    /**
      * 最小 WebSocket 客户端：用于验证端点真的能完成握手
      */
     private static final class ProbeClient extends WebSocketClient {
-
         private final CountDownLatch openLatch = new CountDownLatch(1);
 
         private ProbeClient(int port, String serverName) throws Exception {

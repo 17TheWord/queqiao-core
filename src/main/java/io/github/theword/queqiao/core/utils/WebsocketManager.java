@@ -643,6 +643,15 @@ public class WebsocketManager {
     /**
      * 分发事件到所有接收方
      *
+     * <p><b>生命周期门控</b>：只接受"Manager 已启动且未销毁"时发起的事件。
+     * 状态检查与接收方快照获取在同一个 {@link #lifecycleLock} 临界区内完成，
+     * 因此 {@link #suspend()} / {@link #stop(int, String)} 与发送请求有明确的先后关系：
+     * <ul>
+     *     <li>发送先拿到锁并通过检查 → 该事件视为在停止之前已被接受，允许继续完成；</li>
+     *     <li>停止先拿到锁并完成状态切换 → 之后到达的发送请求一律被拒绝。</li>
+     * </ul>
+     * 本方法<b>不等待</b>已接受的发送完成，因此 {@code stop()} 返回不代表此前的事件都已发送完毕。
+     *
      * <p>线程模型：序列化与分发都在<b>调用线程</b>上同步完成。
      * 这是有意为之——实测单次事件序列化约 1~2.3 µs，每 tick 100 个事件仅占
      * 50 ms tick 预算的 0.5% 左右；而改为异步会引入"队列溢出如何处理"与
@@ -661,6 +670,12 @@ public class WebsocketManager {
         List<WsClient> wsClientSnapshot;
         WsServer wsServerSnapshot;
         synchronized (lifecycleLock) {
+            // 状态检查与快照必须同临界区：否则可能在"检查通过 → 取快照"之间被 suspend/stop 清空，
+            // 之后仍用旧快照发送，等于绕过了生命周期门控。
+            if (!started || destroyed) {
+                utils.debugLog("WebsocketManager 未启动或已销毁，事件未分发");
+                return;
+            }
             wsClientSnapshot = new ArrayList<>(wsClientList);
             wsServerSnapshot = wsServer;
         }
