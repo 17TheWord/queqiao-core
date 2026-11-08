@@ -1,6 +1,8 @@
 package io.github.theword.queqiao.core.runtime;
 
 import io.github.theword.queqiao.core.platform.AbstractPlatformContext;
+import io.github.theword.queqiao.core.rcon.RconClient;
+import io.github.theword.queqiao.core.rcon.RconTestConnections;
 import io.github.theword.queqiao.core.support.FakeRconServer;
 import io.github.theword.queqiao.core.support.PlatformStubs;
 import io.github.theword.queqiao.core.support.RuntimeConfigFixture;
@@ -14,6 +16,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
@@ -22,6 +25,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -74,11 +78,16 @@ class QueQiaoRuntimeShutdownTest {
             WebsocketManager real = runtime.getWebsocketManager();
             assertNotNull(real);
             real.stop(1000, "handover");
-            setField(runtime, "websocketManager", new ThrowingManager());
+            WebsocketManager throwing = new ThrowingManager();
+            setField(runtime, "websocketManager", throwing);
 
             runtime.shutdown();
 
             assertEquals(RuntimeState.STOPPED, runtime.getState(), "关闭流程仍应执行完毕");
+            assertSame(
+                    throwing,
+                    runtime.getWebsocketManager(),
+                    "停止过程抛异常时必须保留 Manager 引用（内部可能仍有未终止的 Server）");
             assertTrue(
                     runtime.getShutdownFailures().stream().anyMatch(item -> item.contains("WebsocketManager")),
                     "应记录 Manager 停止失败，实际=" + runtime.getShutdownFailures());
@@ -128,6 +137,10 @@ class QueQiaoRuntimeShutdownTest {
                 runtime.shutdown();
 
                 assertEquals(RuntimeState.STOPPED, runtime.getState(), "关闭流程仍应执行完毕");
+                assertSame(
+                        manager,
+                        runtime.getWebsocketManager(),
+                        "Server 停止未确认时必须保留 Manager 引用，否则未终止的 Server 会失联");
                 assertTrue(
                         runtime.getShutdownFailures().stream().anyMatch(item -> item.contains("WebSocket Server")),
                         "应记录 Server 停止失败，实际=" + runtime.getShutdownFailures());
@@ -154,9 +167,43 @@ class QueQiaoRuntimeShutdownTest {
         }
     }
 
+    @Test
+    @DisplayName("RCON abort 失败（stop 未抛异常）也会进入关闭失败列表")
+    void shutdownRecordsRconReleaseFailure() throws Exception {
+        try (RuntimeConfigFixture fixture = new RuntimeConfigFixture(RuntimeConfigFixture.yaml(
+                false, findFreePort(), false, "127.0.0.1", 25575, RCON_PASSWORD))) {
+
+            runtime = QueQiaoRuntime.create(null, PLATFORM_CONTEXT, null);
+            runtime.start();
+
+            RconClient failing = RconTestConnections.clientWithFailingAbort(
+                    LOGGER, "127.0.0.1", 25575, RCON_PASSWORD);
+            assertTrue(failing.isConnected(), "替身应处于\"持有连接引用\"状态");
+            setRconState(runtime, failing);
+
+            runtime.shutdown();
+
+            assertEquals(RuntimeState.STOPPED, runtime.getState());
+            assertTrue(
+                    runtime.getShutdownFailures().stream().anyMatch(item -> item.contains("RconClient")),
+                    "abort 失败必须进入关闭失败列表，实际=" + runtime.getShutdownFailures());
+            assertTrue(failing.isConnected(), "abort 失败后连接引用应被保留，便于再次尝试");
+        }
+    }
+
     // ------------------------------------------------------------------
     // 辅助
     // ------------------------------------------------------------------
+
+    private static void setRconState(QueQiaoRuntime runtime, RconClient client) throws Exception {
+        Class<?> stateClass = Class.forName(QueQiaoRuntime.class.getName() + "$RconState");
+        Constructor<?> constructor = stateClass.getDeclaredConstructor(boolean.class, RconClient.class);
+        constructor.setAccessible(true);
+        Object state = constructor.newInstance(true, client);
+        Field field = QueQiaoRuntime.class.getDeclaredField("rconState");
+        field.setAccessible(true);
+        field.set(runtime, state);
+    }
 
     private static WebsocketManager newManager() {
         return new WebsocketManager(

@@ -787,10 +787,12 @@ public final class QueQiaoRuntime {
 
         WebsocketManager manager = websocketManager;
         if (manager != null) {
+            boolean released = false;
             try {
                 WebsocketManager.StopResult result = manager.stopWithResult(
                         1000, WebsocketConstantMessage.SHUTDOWN);
-                if (!result.isServerStopped()) {
+                released = result.isServerStopped();
+                if (!released) {
                     // 不只看异常：Manager 通过返回值报告"Server 未确认停止"
                     String detail = "WebSocket Server 未确认停止（selector 线程可能仍在运行，端口可能仍在监听）";
                     failures.add("WebsocketManager: " + detail);
@@ -799,8 +801,11 @@ public final class QueQiaoRuntime {
             } catch (RuntimeException | Error e) {
                 recordShutdownFailure(failures, "WebsocketManager", e);
             }
-            // 先记录结果再清引用：停止失败也必须先被上报
-            websocketManager = null;
+            // 只有确认 Server 已停止才断开管理入口：否则 Manager 内仍保留着未终止的 Server，
+            // 清空引用会让它彻底失联（既无法再停止，也无法判断端口是否仍被占用）。
+            if (released) {
+                websocketManager = null;
+            }
         }
 
         RconClient client = null;
@@ -819,6 +824,13 @@ public final class QueQiaoRuntime {
                 // 关闭在锁外执行：stop() 只关闭 Socket、不等待在途命令，
                 // 但仍不应把 Socket 操作放进保护引用的临界区。
                 client.stop();
+                // stop() 内部会吞掉 abort 异常并保留连接引用，因此"没抛异常"不等于"已释放"。
+                // isConnected() 在这里的含义是"仍持有连接引用"，即未能确认释放。
+                if (client.isConnected()) {
+                    String detail = "连接未确认释放（abort 失败，连接引用仍被保留）";
+                    failures.add("RconClient: " + detail);
+                    logger.error("关闭资源失败：RconClient - {}", detail);
+                }
             } catch (RuntimeException | Error e) {
                 recordShutdownFailure(failures, "RconClient", e);
             }
