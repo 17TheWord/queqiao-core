@@ -16,6 +16,7 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
@@ -484,18 +485,67 @@ public class WebsocketManager {
      * @return 本应展示给用户的进度消息，按发生顺序排列
      */
     public List<String> stop(int code, String reason) {
+        return stopWithResult(code, reason).messages();
+    }
+
+    /**
+     * 永久停止，并返回"Server 是否确认停止"的明确结果
+     *
+     * <p>与 {@link #stop(int, String)} 的差别只在返回值：{@code stop} 的进度消息里
+     * 虽然带有超时提示，但调用方只能靠解析文本判断成败。需要据此上报关闭结果的
+     * 调用方（例如 {@code QueQiaoRuntime#shutdownResources()}）应使用本方法。
+     *
+     * <p><b>停止未确认时不会丢弃引用</b>：{@code wsServer} 仍被保留，
+     * 因此重复调用本方法会再次尝试停止旧实例（见 {@link #stopServer(List, String)}）。
+     *
+     * @param code   关闭码
+     * @param reason 关闭原因
+     * @return 停止结果，包含"Server 是否确认停止"与进度消息
+     */
+    public StopResult stopWithResult(int code, String reason) {
         synchronized (lifecycleLock) {
             List<String> messages = new ArrayList<>();
             if (destroyed && wsServer == null) {
                 utils.debugLog("WebsocketManager 已销毁，忽略重复停止");
-                return messages;
+                return new StopResult(true, messages);
             }
             destroyed = true;
             started = false;
             handleProtocolMessage.closeDispatch();
             stopClients(code, reason, messages);
-            stopServer(messages, reason);
+            boolean serverStopped = stopServer(messages, reason);
             shutdownReconnectScheduler();
+            return new StopResult(serverStopped, messages);
+        }
+    }
+
+    /**
+     * 停止结果
+     *
+     * <p>只表达"这一次停止操作观察到的状态"，不承担历史实例管理：
+     * 失败时旧 Server 引用仍留在 Manager 内，由下一次 {@code stop} / {@code restart} 重试。
+     */
+    public static final class StopResult {
+
+        private final boolean serverStopped;
+        private final List<String> messages;
+
+        private StopResult(boolean serverStopped, List<String> messages) {
+            this.serverStopped = serverStopped;
+            this.messages = Collections.unmodifiableList(new ArrayList<>(messages));
+        }
+
+        /**
+         * @return true 表示没有 Server，或已确认 selector 线程退出（端口已释放）
+         */
+        public boolean isServerStopped() {
+            return serverStopped;
+        }
+
+        /**
+         * @return 本应展示给用户的进度消息（不可修改）
+         */
+        public List<String> messages() {
             return messages;
         }
     }

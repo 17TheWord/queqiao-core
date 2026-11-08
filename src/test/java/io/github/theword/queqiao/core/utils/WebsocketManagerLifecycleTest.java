@@ -293,6 +293,60 @@ class WebsocketManagerLifecycleTest {
     }
 
     @Test
+    @DisplayName("stopWithResult：Server 停止未确认时返回失败并保留引用")
+    void stopWithResultReportsUnconfirmedServerStop() throws Exception {
+        int port = findFreePort();
+        WebsocketManager manager = newManager(serverConfig(port));
+        CountDownLatch selectorStarted = new CountDownLatch(1);
+        CountDownLatch releaseSelector = new CountDownLatch(1);
+
+        // 忽略中断：使 stopBounded 无法确认终止（与上一用例同一构造方式）
+        WsServer stuck = new WsServer(
+                new InetSocketAddress("127.0.0.1", port),
+                LOGGER,
+                HANDLE_PROTOCOL_MESSAGE,
+                "Server",
+                "",
+                true) {
+
+            @Override
+            public void onStart() {
+                super.onStart();
+                selectorStarted.countDown();
+                awaitUninterruptibly(releaseSelector);
+            }
+        };
+
+        try {
+            stuck.start();
+            assertTrue(selectorStarted.await(5, TimeUnit.SECONDS), "Server 应已开始监听");
+            setWsServer(manager, stuck);
+
+            WebsocketManager.StopResult result = manager.stopWithResult(1000, "test stop");
+
+            assertFalse(result.isServerStopped(), "selector 线程未退出时必须报告停止失败");
+            assertSame(stuck, manager.getWsServer(), "停止失败时不得丢弃 Server 引用");
+            assertTrue(
+                    result.messages().stream().anyMatch(message -> message.contains("未在")),
+                    "进度消息应包含超时说明，实际=" + result.messages());
+        } finally {
+            releaseSelector.countDown();
+            manager.stop(1000, "test cleanup");
+        }
+    }
+
+    @Test
+    @DisplayName("stopWithResult：无 Server 或已确认终止时报告成功")
+    void stopWithResultReportsSuccessWhenNothingToStop() {
+        WebsocketManager manager = newManager(disabledTransportsConfig());
+
+        WebsocketManager.StopResult result = manager.stopWithResult(1000, "test stop");
+
+        assertTrue(result.isServerStopped(), "没有 Server 时应视为已停止");
+        assertNull(manager.getWsServer());
+    }
+
+    @Test
     @DisplayName("服务端级异常回调不清空引用：restart 会先确认终止再重建")
     void serverFailureKeepsReferenceUntilConfirmedTerminated() throws Exception {
         int port = findFreePort();

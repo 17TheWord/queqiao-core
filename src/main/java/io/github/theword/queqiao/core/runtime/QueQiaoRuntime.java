@@ -157,6 +157,18 @@ public final class QueQiaoRuntime {
     private volatile RconState rconState = RconState.DISABLED;
 
     /**
+     * 最近一次关闭流程中"未能确认停止"的资源说明
+     *
+     * <p>空列表表示所有受管资源都确认停止；非空表示关闭流程<b>已执行完毕</b>，
+     * 但下列资源未能确认释放（详见对应 ERROR 日志）。
+     *
+     * <p>存在的原因：{@link RuntimeState#STOPPED} 只能表达"关闭流程结束"，
+     * 不能表达"所有底层资源都已释放"。本字段是二者的最小区分手段，
+     * 不引入历史实例管理，也不改变状态机。
+     */
+    private volatile List<String> shutdownFailures = Collections.emptyList();
+
+    /**
      * RCON 的不可变状态快照
      *
      * <p>"是否启用"与"当前客户端"必须<b>同时生效</b>：若用两个独立的 volatile 字段表达，
@@ -721,6 +733,10 @@ public final class QueQiaoRuntime {
      * {@code NEW} 与 {@code FAILED} 保持原状态不变（因此"先 shutdown 再 start"仍然可行），
      * {@code STOPPED} / {@code STOPPING} 为 no-op。
      *
+     * <p><b>各资源独立清理</b>：某项失败不会阻止其余资源继续停止。失败会记 ERROR 日志，
+     * 并可通过 {@link #getShutdownFailures()} 读取——{@code STOPPED} 只说明关闭流程结束，
+     * 不代表所有资源都确认释放。
+     *
      * <p>与 {@link #start()} 共享 {@link #operationLock}：不会中断进行中的启动，
      * 也会等待尚未完成的 {@code reload()} 结束后才开始清理，避免并发销毁组件。
      */
@@ -741,7 +757,12 @@ public final class QueQiaoRuntime {
                 // STOPPING 卡成永久 no-op，破坏幂等语义
                 state.set(RuntimeState.STOPPED);
             }
-            logger.info("鹊桥已关闭");
+            // STOPPED 只表示"关闭流程执行完毕"；资源是否真的全部释放由 shutdownFailures 表达
+            if (shutdownFailures.isEmpty()) {
+                logger.info("鹊桥已关闭");
+            } else {
+                logger.error("鹊桥关闭流程已执行完毕，但以下资源未确认停止：{}", shutdownFailures);
+            }
         }
     }
 
@@ -749,33 +770,89 @@ public final class QueQiaoRuntime {
      * 清理 Runtime 管理生命周期的资源，并停用平台翻译服务；
      * 顺序为状态采集器 → WebSocket → RCON → 翻译服务。
      *
+     * <p><b>各步骤相互隔离</b>：任何一步抛出异常或报告失败，都不会阻止后续步骤执行。
+     * 失败会记录 ERROR 日志并汇总到 {@link #getShutdownFailures()}——因为
+     * "关闭流程执行完毕"（{@link RuntimeState#STOPPED}）与"所有资源都已释放"是两件事。
+     *
      * <p>每一项自身幂等，因此本方法可被"启动失败回滚"与"正常关闭"共用。
      */
     private void shutdownResources() {
-        serverStatusCollector.stopRefreshScheduler();
+        List<String> failures = new ArrayList<>();
+
+        try {
+            serverStatusCollector.stopRefreshScheduler();
+        } catch (RuntimeException | Error e) {
+            recordShutdownFailure(failures, "ServerStatusCollector", e);
+        }
 
         WebsocketManager manager = websocketManager;
         if (manager != null) {
-            manager.stop(1000, WebsocketConstantMessage.SHUTDOWN);
+            try {
+                WebsocketManager.StopResult result = manager.stopWithResult(
+                        1000, WebsocketConstantMessage.SHUTDOWN);
+                if (!result.isServerStopped()) {
+                    // 不只看异常：Manager 通过返回值报告"Server 未确认停止"
+                    String detail = "WebSocket Server 未确认停止（selector 线程可能仍在运行，端口可能仍在监听）";
+                    failures.add("WebsocketManager: " + detail);
+                    logger.error("关闭资源失败：WebsocketManager - {}", detail);
+                }
+            } catch (RuntimeException | Error e) {
+                recordShutdownFailure(failures, "WebsocketManager", e);
+            }
+            // 先记录结果再清引用：停止失败也必须先被上报
             websocketManager = null;
         }
 
-        RconClient client;
-        synchronized (rconLifecycleLock) {
-            client = rconState.client();
-            rconState = RconState.DISABLED;
-            // 递增代次：任何仍在进行的切换都不得再把客户端发布回来
-            rconGeneration++;
+        RconClient client = null;
+        try {
+            synchronized (rconLifecycleLock) {
+                client = rconState.client();
+                rconState = RconState.DISABLED;
+                // 递增代次：任何仍在进行的切换都不得再把客户端发布回来
+                rconGeneration++;
+            }
+        } catch (RuntimeException | Error e) {
+            recordShutdownFailure(failures, "RconClient(引用摘除)", e);
         }
         if (client != null) {
-            // 关闭在锁外执行：stop() 只关闭 Socket、不等待在途命令，
-            // 但仍不应把 Socket 操作放进保护引用的临界区。
-            client.stop();
+            try {
+                // 关闭在锁外执行：stop() 只关闭 Socket、不等待在途命令，
+                // 但仍不应把 Socket 操作放进保护引用的临界区。
+                client.stop();
+            } catch (RuntimeException | Error e) {
+                recordShutdownFailure(failures, "RconClient", e);
+            }
         }
 
         // 翻译服务由平台持有，这里只负责按生命周期停用。disable() 幂等，
         // 且 TranslationService 构造不读磁盘，因此"从未加载过"时调用也无副作用。
-        platformContext.getTranslationService().disable();
+        try {
+            platformContext.getTranslationService().disable();
+        } catch (RuntimeException | Error e) {
+            recordShutdownFailure(failures, "TranslationService", e);
+        }
+
+        shutdownFailures = Collections.unmodifiableList(failures);
+    }
+
+    /**
+     * 记录一条关闭失败：写入汇总列表并输出 ERROR 日志
+     *
+     * @param failures 本次关闭的失败汇总
+     * @param resource 资源名称
+     * @param error    导致失败的异常
+     */
+    private void recordShutdownFailure(List<String> failures, String resource, Throwable error) {
+        String detail = error.getClass().getSimpleName() + ": " + error.getMessage();
+        failures.add(resource + ": " + detail);
+        logger.error("关闭资源失败：{} - {}", resource, detail, error);
+    }
+
+    /**
+     * @return 最近一次关闭流程中未能确认停止的资源说明；空列表表示全部确认停止
+     */
+    public List<String> getShutdownFailures() {
+        return shutdownFailures;
     }
 
     /**

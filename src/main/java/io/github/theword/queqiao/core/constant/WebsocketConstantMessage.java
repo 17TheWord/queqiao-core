@@ -29,6 +29,13 @@ public class WebsocketConstantMessage {
         public static final String MESSAGE_HANDLE_FAILED = CONNECT_TO + "处理收到的消息时发生异常，已忽略该消息";
         public static final String URI_SYNTAX_ERROR = CONNECT_TO + "WebSocket URL 格式错误，无法连接！";
         public static final String MAX_RECONNECT_ATTEMPTS_REACHED = CONNECT_TO + "重连次数达到最大值，将不再自动重连，请使用命令手动重连！";
+
+        /**
+         * 已停止的客户端在重连竞态下建立了连接时的提示
+         *
+         * <p>参数：URI。此时连接会被立即关闭，不进入业务处理。
+         */
+        public static final String STOPPED_DISCARD_CONNECTION = CONNECT_TO + "WebSocket Client 已停止，丢弃竞态中建立的连接。";
     }
 
     public static class Server {

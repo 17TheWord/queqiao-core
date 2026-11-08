@@ -41,7 +41,11 @@ public enum RuntimeState {
     STOPPING,
 
     /**
-     * 已正常关闭，不可再次启动
+     * 关闭流程已执行完毕，不可再次启动
+     *
+     * <p><b>只表示"清理步骤都跑完了"</b>，不表示所有底层资源都确认释放：
+     * 个别资源可能停止失败（例如 WebSocket Server 的 selector 线程未退出）。
+     * 具体结果见 {@code QueQiaoRuntime#getShutdownFailures()}。
      */
     STOPPED,
 
