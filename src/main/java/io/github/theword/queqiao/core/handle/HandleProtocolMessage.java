@@ -56,6 +56,21 @@ public class HandleProtocolMessage {
     private final RuntimeUtils utils;
 
     /**
+     * 分发门控
+     *
+     * <p>{@code WebsocketManager} 在暂停端点时会<b>先</b>关闭本门控、<b>再</b>停止连接，
+     * 使"暂停生效之后到达的报文"不再进入协议处理（例如 reload 切换 RCON 期间）。
+     *
+     * <p><b>原子性边界</b>：检查与"进入"在同一个临界区内完成；真正的处理在锁外执行。
+     * 因此关闭门控不会等待正在执行的请求，也就不存在"Selector 线程与 Reload 互相等待"。
+     * 一旦 {@link #closeDispatch()} 返回，就不会再有新的报文通过检查。
+     */
+    private final Object dispatchGate = new Object();
+
+    /** 门控是否已关闭。由 {@link #dispatchGate} 保护。 */
+    private boolean dispatchClosed;
+
+    /**
      * @param logger 日志实现
      * @param gson   JSON 实现
      * @param apis   要启用的 Api 集合；装配方决定注册哪些
@@ -90,11 +105,11 @@ public class HandleProtocolMessage {
      *
      * @param webSocket      WebSocket连接
      * @param rawJsonMessage 收到的JSON字符串
-     * @return 响应的JSON字符串
+     * @return 响应的 JSON 字符串；分发已暂停时返回 {@code null}（调用方不应回执）
      */
     public String handleWebsocketJson(WebSocket webSocket, String rawJsonMessage) {
         Response response = this.handle(rawJsonMessage, webSocket.getRemoteSocketAddress().toString(), MessageSource.WEBSOCKET);
-        return gson.toJson(response);
+        return response == null ? null : gson.toJson(response);
     }
 
     /**
@@ -106,14 +121,57 @@ public class HandleProtocolMessage {
      * 因此请勿将其当作"死代码"清理。
      *
      * @param rawJsonMessage 收到的JSON字符串
-     * @return 响应的JSON字符串
+     * @return 响应的 JSON 字符串；分发已暂停时返回 {@code null}
      */
     public String handleHttpJson(String rawJsonMessage) {
         Response response = this.handle(rawJsonMessage, CommonConstants.Text.EMPTY, MessageSource.HTTP);
-        return gson.toJson(response);
+        return response == null ? null : gson.toJson(response);
+    }
+
+    /**
+     * 关闭协议分发入口（幂等）
+     *
+     * <p>调用方应在停止 WebSocket 端点<b>之前</b>调用本方法：此后到达的报文不会进入
+     * 协议 Handler，也不会产生响应。已经进入 Handler 的请求不会被等待。
+     */
+    public void closeDispatch() {
+        synchronized (dispatchGate) {
+            dispatchClosed = true;
+        }
+    }
+
+    /**
+     * 重新开放协议分发入口（幂等）
+     */
+    public void openDispatch() {
+        synchronized (dispatchGate) {
+            dispatchClosed = false;
+        }
+    }
+
+    /**
+     * 尝试进入协议分发
+     *
+     * <p>检查与"进入"在同一个临界区内完成：返回 true 即表示本条报文已通过门控，
+     * 之后即使门控被关闭也不会再影响它（处理本身在锁外，不会阻塞关闭方）。
+     *
+     * @return true 表示应继续处理
+     */
+    private boolean enterDispatch() {
+        synchronized (dispatchGate) {
+            return !dispatchClosed;
+        }
     }
 
     private Response handle(String rawJsonMessage, String address, MessageSource source) {
+        if (!enterDispatch()) {
+            // 门控已关闭：不解析、不路由、不回执
+            utils.debugLog(
+                    "协议分发已暂停，忽略来自 {} 的 {} 消息（原始长度 {}）",
+                    address, source, lengthOf(rawJsonMessage));
+            return null;
+        }
+
         // 脱敏与截断只在开启 debug 时执行，避免每条消息都多解析一次 JSON
         if (utils.isDebugEnabled()) {
             utils.debugLog(

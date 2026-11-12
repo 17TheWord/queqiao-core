@@ -197,6 +197,28 @@ public abstract class CommandExecutionContext<NCS> {
 
 ### 新增
 
+- **`WebsocketManager#suspend()`**：临时停止所有 endpoint 但**保留**共享重连调度器，
+  供 reload 在切换 RCON 期间暂停接入；幂等，且不设置永久销毁标记（那仍只属于 `stop()`）。
+  停止是**有界**的：最多等待 selector 线程 1 秒，超时则中断该线程，绝不会无限等待；
+  若仍未确认退出，会以进度消息与 WARN 日志明确告知，而不是假装已经停干净。
+  此时**保留旧 Server 引用且不启动新 Server**（端口可能仍被占用），
+  下一次 `restart()` / `stop()` 会再次尝试停止它，避免实例与端口永久失联。
+- **`HandleProtocolMessage#closeDispatch()` / `openDispatch()`**：协议分发门控。
+  暂停时先关门控再停连接，门控关闭后到达的报文不再进入协议 Handler（也不回执）；
+  检查与"进入"在同一临界区内完成，但处理在锁外，因此关闭不会等待在途请求。
+- **`WsServer#stopBounded(int, String)` / `WsServer#isTerminated()`**：
+  把"有界停止 + 中断兜底"封装在服务端自身，并能如实回答"selector 线程是否已退出"
+  （监听通道的释放与它绑定），不会在启动窗口或超时场景里误报"已终止"。
+  背景：Java-WebSocket 1.5.3 的 `stop(timeout)` 内部是 `selectorthread.join(timeout)`
+  （传 0 等于无限等待），而且它**不关闭** `ServerSocketChannel`——通道是在 selector
+  线程退出时的 `doServerShutdown()` 里关闭的，线程卡住时端口会一直可连。
+- **`rcon.host` 配置项**：指定 RCON 服务地址，默认 `127.0.0.1`。
+  - 支持主机名、IPv4、IPv6 字面地址与域名，不做格式限制；空白值在校验阶段即被拒绝。
+  - 默认值刻意使用 IPv4 回环地址而不是 `localhost`——部分操作系统会把 `localhost`
+    优先解析为 `::1`，而 Minecraft 的 RCON 通常只监听 IPv4 回环地址，导致连接被拒绝。
+  - 旧配置文件没有该字段时**自动使用默认值**，无需删除或手工迁移配置。
+  - `RconClient` 新增 `(Logger, String host, int port, String password)` 构造器；
+    原三参数构造器保留，等价于传入 `127.0.0.1`（源码与二进制兼容）。
 - **Schema 驱动的配置系统**（单文件 `config.yml`）：
   - `ConfigKeys` —— 全部配置项的**唯一声明处**（路径 / 类型 / 默认值 / 取值范围 / 注释）；
   - `ConfigKey` / `ConfigRegistry` / `ConfigTree` / `ConfigNode` / `ConfigSectionNode` —— Schema 模型与节点树；
@@ -257,6 +279,17 @@ public abstract class CommandExecutionContext<NCS> {
 
 ### 变更
 
+- **RCON 的"启用状态"与"客户端"改为原子切换**：`sendRconCommand()` 只读取一次不可变状态快照，
+  因此不会出现"新配置 + 旧客户端"的混合状态；切换窗口内命令一律返回 503（`DISCONNECTED`）。
+- **`HandleProtocolMessage#handleWebsocketJson` / `#handleHttpJson` 可能返回 `null`**：
+  分发门控关闭期间返回 `null`（表示"不回执"）。直接调用这两个入口的代码需要判空，
+  不要把它当成合法 JSON 继续解析。
+- **`RconClient` 的关闭语义改为"快速中止"**：`stop()` 不再等待在途命令结束，且停止后的实例
+  视为已废弃——不再接受 `connect()` 与 `sendCommand()`，需要重新连接时由 `QueQiaoRuntime`
+  创建新实例。这样既消除了死锁，也避免"同一实例在停止与重连之间来回切换"引入新的竞态。
+  `stop()` 现在**可重试**：底层 `abort()` 失败时保留连接引用，重复调用会再次尝试清理，
+  只有确认释放后才清除引用；`isConnected()` 反映"是否仍持有连接引用"，
+  因此中止失败后仍可能返回 `true`，但命令已经一律失败。
 - **正常启动不再写 `config.yml`**：只有文件**缺失或为空**时才会生成一份带注释的完整配置；
   文件正常时**只读不写**——缺失字段在**内存**中取 Schema 默认值，用户文件一个字都不动。
   真正需要覆盖用户文件的场景（未来的配置迁移、显式"同步配置"命令）由
@@ -360,6 +393,49 @@ public abstract class CommandExecutionContext<NCS> {
 
 ### 修复
 
+- **Reload 期间 RCON 切换与 WebSocket 请求交错**：`reload()` 现在按
+  "暂停 WebSocket 接入 → 加载配置 → **切换 RCON** → 更新其它组件 → 按新配置恢复"执行，
+  切换过程中不会再有新请求进入 Runtime（暂停时先关闭分发门控，关闭握手期间到达的报文
+  也不会进入协议 Handler）；旧 RCON 的关闭也不需要等待在途命令。
+  RCON 切换紧跟配置加载，保证 WebSocket 恢复时使用的客户端已与当前配置一致。
+  **切换窗口内 `send_rcon_command` 返回 503**：旧客户端会先被摘除并停止，
+  命令不会打到旧主机；新连接失败时保持不可用，不会回退到旧客户端。
+  Endpoint 的恢复位于 `finally`：配置非法、RCON 连不上或其它步骤失败都不会让
+  WebSocket 永久停服，恢复本身的异常会与原始异常一并保留（作为 suppressed）。
+- **WebSocket Server 停止可能无限等待**：停止路径改用有界等待 + 中断兜底，
+  不再使用 `stop(0, ...)`。selector 线程若卡在缓冲区等待（解码线程被同步回调占满时会发生）
+  或其它阻塞点，最多等待 1 秒后会被中断，从而走到 `doServerShutdown()` 关闭监听通道；
+  仍未退出时会明确记录"未能确认停止"，不假装已经停干净。
+  服务端级异常回调（`onError(null, ...)`）**不再提前清空实例引用**：该回调不代表 selector
+  线程已退出、也不代表端口已释放，提前清引用会让后续 restart 在端口仍被占用时重复 bind，
+  既没有服务又丢失了对旧实例的跟踪。引用只在确认终止后清理。
+  **升级提示（Reload 行为）**：
+  - Reload 期间 WebSocket 会**暂停接入**（Client 与 Server 都停止），完成后按新配置恢复；
+    已建立的连接会被正常关闭，由客户端按既有重连策略重连。
+  - RCON 连接的建立是**同步网络操作**，耗时取决于目标地址解析、TCP 连接与认证，
+    因此 Reload 的总耗时可能明显长于"只读一遍配置"，没有固定的时间上限承诺。
+  - 旧 RCON 连接上的**在途请求可能因连接被中止而失败**（`COMMAND_FAILED` / HTTP 500）。
+  - 这些失败的命令**不会自动重放**——RCON 命令可能有副作用，客户端无法判断服务器是否已执行。
+- **启动时 WebSocket 先于 RCON 就绪**：`doStart()` 改为先初始化 RCON 再开放 WebSocket，
+  消除"WebSocket 已经在接收请求、而 RCON 还没连上"的启动窗口。
+  RCON 连接失败仍然不会阻断启动，相关请求得到明确的不可用响应。
+- **Reload / 关闭时在途 RCON 请求会阻塞连接销毁，导致服务器主线程死锁**（严重）：
+  `RconClient` 此前用同一个对象监视器串行化 `connect` / `sendCommand` / `stop`，
+  于是当命令线程正阻塞在"等待服务器返回响应"上时，`stop()` 只能排队等它结束；
+  而 RCON 命令往往要等 Minecraft 主线程处理完才返回，主线程又在执行 reload / shutdown，
+  双方互相等待即形成死锁。现在拆成两把锁：
+  - `lifecycleLock` 只做状态判断与连接引用发布，**绝不**承载网络 IO；
+  - `commandLock` 只保证同一条连接上的命令串行；
+  - `stop()` **不获取 `commandLock`**，只做"摘引用 + 关闭底层 Socket"，并在锁外执行。
+
+  在途命令会因 Socket 被关闭而失败（映射为 `COMMAND_FAILED` / HTTP 500），这是预期行为，
+  **不会自动重放**——RCON 命令可能有副作用，客户端无法判断服务器是否已经执行。
+- **关闭连接与命令执行并发时资源无法及时释放**：新增 `Connection#abort()`，
+  直接关闭底层 Socket 而**不**调用 `org.glavo.rcon.Rcon#close()` / `disconnect()`——
+  后两者会先获取 RCON 库内部的 `ReentrantLock`，而在途命令正持有同一把锁。
+  命令失败时的清理改为 identity 检查 + 中止：只清除仍然指向失败连接的引用，
+  迟到的异常不会清掉已经替换上来的新连接；连接建立与 `stop()` 竞争时，
+  迟到的连接不会发布到已停止的实例上，而是被立即中止。
 - **配置文件语法错误会导致整份配置被默认值覆盖**（严重）：此前 YAML 解析失败时被当作"空配置"，
   于是所有字段都被视为缺失、进而用默认值重写整个文件——用户少一个缩进就会丢掉全部配置。
   现在严格区分 `EMPTY` 与 `INVALID`：**解析失败时原文件绝不被覆盖**，

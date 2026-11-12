@@ -85,6 +85,25 @@ public final class ConfigValidators {
     }
 
     /**
+     * 字符串非空白（{@code trim()} 后仍非空）
+     *
+     * <p>与 {@link #nonEmpty()} 的区别：本校验器同时拒绝<b>纯空白</b>（{@code "   "}）。
+     * 用于"空白值无法被使用、只会在更晚的阶段以更难懂的错误暴露"的配置项，
+     * 例如主机地址——{@code "  "} 会在建立连接时变成 {@code UnknownHostException}。
+     *
+     * <p>与 {@link #nonEmpty()} 一致，{@code null} 交给 codec 决定语义，此处不校验。
+     *
+     * @return 校验器
+     */
+    public static ConfigValidator<String> nonBlank() {
+        return (path, value) -> {
+            if (value != null && value.trim().isEmpty()) {
+                throw new ConfigValidationException(path, "值不能为空白");
+            }
+        };
+    }
+
+    /**
      * 取值必须在给定集合内
      *
      * @param allowed 允许的取值

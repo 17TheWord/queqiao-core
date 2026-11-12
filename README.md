@@ -139,6 +139,9 @@ QueQiaoRuntime runtime = QueQiaoRuntime.create(
 
 - 依赖 `org.glavo:rcon-java:3.0`
 - 为节约端口资源，直接将 `Rcon` 功能集成在本工具包中。
+- 连接地址由 `rcon.host` 指定，默认 `127.0.0.1`（IPv4 回环地址）；支持主机名、IPv4、
+  IPv6 字面地址与域名。默认值不使用 `localhost`，因为部分系统会把它优先解析为 `::1`，
+  而 Minecraft 的 RCON 通常只监听 IPv4。
 - 开放 `send_rcon_command` 接口供外部应用调用。
 
 ## 开发与测试

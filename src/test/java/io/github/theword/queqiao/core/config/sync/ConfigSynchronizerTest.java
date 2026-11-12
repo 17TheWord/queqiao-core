@@ -42,7 +42,7 @@ class ConfigSynchronizerTest {
     /**
      * 配置项总数（用于测试空文档补齐默认值）
      */
-    private final Integer configSize = 24;
+    private final Integer configSize = 25;
 
     private static ConfigRegistry newRegistry() {
         ConfigRegistry registry = new ConfigRegistry();

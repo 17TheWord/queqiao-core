@@ -58,7 +58,7 @@ class LegacyConfigCompatibilityTest {
     @Test
     @DisplayName("注册全部核心配置项，并保持旧版 23 个路径兼容")
     void declaresAllLegacyPaths() {
-        assertEquals(24, ConfigKeys.all().size(), "核心配置项数量应包含新增状态采集配置");
+        assertEquals(25, ConfigKeys.all().size(), "核心配置项数量应包含新增状态采集与 Rcon 地址配置");
 
         ConfigRegistry registry = new ConfigRegistry();
         ConfigKeys.registerAll(registry);
@@ -71,7 +71,7 @@ class LegacyConfigCompatibilityTest {
     @DisplayName("旧配置字段识别为 USER，新加配置保留 Schema 默认值")
     void allLegacyFieldsAreUserSourced() {
         for (ConfigKey<?> key : ConfigKeys.all()) {
-            if (key.equals(ConfigKeys.Status.REFRESH_INTERVAL_SECONDS)) {
+            if (key.equals(ConfigKeys.Status.REFRESH_INTERVAL_SECONDS) || key.equals(ConfigKeys.Rcon.HOST)) {
                 assertFalse(runtime.contains(key), "旧配置不包含新增字段：" + key.getPath());
                 assertTrue(runtime.isDefault(key), "新增字段应使用 Schema 默认值：" + key.getPath());
                 continue;
@@ -119,6 +119,8 @@ class LegacyConfigCompatibilityTest {
         assertEquals(Boolean.FALSE, runtime.get(ConfigKeys.Rcon.ENABLE));
         assertEquals(Integer.valueOf(25575), runtime.get(ConfigKeys.Rcon.PORT));
         assertEquals("", runtime.get(ConfigKeys.Rcon.PASSWORD));
+        // 旧配置没有 rcon.host：内存中取 Schema 默认值，不要求用户迁移文件
+        assertEquals("127.0.0.1", runtime.get(ConfigKeys.Rcon.HOST), "缺失 rcon.host 时应回退默认地址");
 
         // subscribe_event
         assertEquals(Boolean.TRUE, runtime.get(ConfigKeys.SubscribeEvent.PLAYER_CHAT));

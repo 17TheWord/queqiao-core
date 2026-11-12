@@ -23,6 +23,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -65,7 +66,7 @@ class ConfigWriterTest {
     // ------------------------------------------------------------------
 
     @Test
-    @DisplayName("首次生成：包含全部 23 个配置项与区块")
+    @DisplayName("首次生成：包含全部配置项与区块")
     void generatesAllKeys() {
         String yaml = render();
 
@@ -88,6 +89,22 @@ class ConfigWriterTest {
         assertTrue(yaml.contains("server_name: Server"), "默认值应出现在生成的文档中");
         assertTrue(yaml.contains("port: 8080"));
         assertTrue(yaml.contains("port: 25575"));
+    }
+
+    @Test
+    @DisplayName("rcon 区块写出 host，默认值为 IPv4 回环地址，且字段顺序为 enable→host→port→password")
+    @SuppressWarnings("unchecked")
+    void writesRconHost() {
+        String yaml = render();
+
+        Map<String, Object> root = parse(yaml);
+        Map<String, Object> rcon = (Map<String, Object>) root.get("rcon");
+        assertNotNull(rcon, "应生成 rcon 区块");
+        assertEquals("127.0.0.1", rcon.get("host"), "应写出 rcon.host 默认值");
+        assertEquals(
+                "enable,host,port,password",
+                String.join(",", rcon.keySet()),
+                "rcon 区块字段顺序应与声明顺序一致");
     }
 
     @Test

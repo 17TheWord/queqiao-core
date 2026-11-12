@@ -16,6 +16,7 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
@@ -37,7 +38,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <p>调度器在构造阶段创建（{@link ScheduledThreadPoolExecutor} 的 core 线程在首次提交任务时才启动，
  * 因此即使未启用 Client 也无实际线程开销），只在 {@link #stop(int, String)} 这一永久销毁路径
- * 关闭；{@code stopClients()} / {@code restartClients()} 绝不触碰它。
+ * 关闭；{@code stopClients()} / {@code restartClients()} / {@link #suspend()} / {@link #restart(Config)}
+ * 绝不触碰它。
  *
  * @since 0.6.11
  */
@@ -61,6 +63,20 @@ public class WebsocketManager {
      * 重连调度器线程名前缀
      */
     private static final String RECONNECT_THREAD_NAME_PREFIX = "QueQiao-WebSocket-Reconnect-";
+
+    /**
+     * 停止 WebSocket Server 时等待 selector 线程退出的上限（毫秒）
+     *
+     * <p>Java-WebSocket 的 {@code stop(timeout, closeMessage)} 内部是
+     * {@code selectorthread.join(timeout)}，<b>传 0 等于无限等待</b>。而 selector 线程
+     * 可能阻塞在缓冲区等待或同步回调里，此时"等它退出"会变成死锁：主线程等 selector，
+     * selector 等主线程。
+     *
+     * <p>正常关闭时该线程会在 {@code isclosed} 后的 5 次 5ms 轮询内退出（约 25ms），
+     * 1 秒是它的 40 倍，足够吸收调度抖动；超时后由 {@link WsServer#stopBounded(int, String)}
+     * 补一次中断，避免线程卡住导致端口一直处于监听状态。
+     */
+    private static final int SERVER_STOP_JOIN_TIMEOUT_MILLIS = 1_000;
 
     private final Object lifecycleLock = new Object();
     private final List<WsClient> wsClientList;
@@ -337,29 +353,75 @@ public class WebsocketManager {
     }
 
     /**
-     * 清除仍指向当前失败实例的引用。volatile identity check 可避免旧实例的迟到回调清掉新 Server。
+     * 服务端级异常回调（{@code onError(null, ...)}）
+     *
+     * <p><b>只记录，不清理引用</b>：Java-WebSocket 的服务端级异常回调（bind 失败、
+     * selector 级错误）<b>不等于</b> selector 线程已经退出，也不等于监听 Socket 已经释放。
+     * 若在这里清空引用，后续 restart 会误以为"没有旧 Server"，在端口仍被占用时 bind
+     * 一个新实例——结果是既没有服务，又失去了对旧实例的跟踪。
+     *
+     * <p>引用的清理只由 {@link #stopServer(List, String)} 在 {@code stopBounded()}
+     * 明确确认终止后进行。
+     *
+     * @param failedServer 报告异常的服务端实例
      */
     private void onServerFailure(WsServer failedServer) {
-        if (wsServer == failedServer) {
-            wsServer = null;
-        }
+        utils.debugLog("WebSocket Server 报告服务端级异常，保留实例引用等待停止确认：{}:{}",
+                failedServer.getAddress().getHostString(), failedServer.getPort());
     }
 
-    private void stopServer(List<String> messages, String reason) {
-        if (wsServer != null) {
-            try {
-                wsServer.stop(0, reason);
-                messages.add(reason);
-            } catch (InterruptedException e) {
-                messages.add(WebsocketConstantMessage.Server.ERROR_ON_STOPPING);
-                utils.debugLog(e.getMessage());
-            }
+    /**
+     * 停止 WebSocket Server
+     *
+     * <p><b>有界等待 + 中断兜底</b>：绝不使用 {@code stop(0, ...)}（等于无限等待 selector
+     * 线程），也不假设 {@code stop(timeout)} 已经关闭监听端口——ServerSocketChannel 是在
+     * selector 线程退出时才关闭的。具体策略见 {@link WsServer#stopBounded(int, String)}。
+     *
+     * <p><b>停止未确认时保留引用</b>：只有确认 selector 线程退出后才清空 {@code wsServer}。
+     * 否则旧实例会失去跟踪（既无法再停止、也无法判断端口是否仍被占用），
+     * 而调用方会误以为端口已释放并继续 bind。
+     *
+     * @param messages 进度消息收集器
+     * @param reason   关闭原因
+     * @return true 表示没有 Server，或已确认 selector 线程退出（端口已释放）；
+     *         false 表示已中断但仍未确认线程退出，<b>引用被保留</b>，端口可能仍在监听
+     */
+    private boolean stopServer(List<String> messages, String reason) {
+        WsServer current = wsServer;
+        if (current == null) {
+            return true;
+        }
+        boolean terminated = current.stopBounded(SERVER_STOP_JOIN_TIMEOUT_MILLIS, reason);
+        messages.add(reason);
+        if (!terminated) {
+            logger.warn(
+                    "WebSocket Server 未在 {} ms 内确认停止，selector 线程可能仍阻塞在协议回调中；"
+                            + "已发出中断，但端口可能仍在监听（保留旧实例以便再次停止）",
+                    SERVER_STOP_JOIN_TIMEOUT_MILLIS);
+            messages.add(Tool.format(
+                    WebsocketConstantMessage.Server.STOP_TIMEOUT, SERVER_STOP_JOIN_TIMEOUT_MILLIS));
+            return false;
+        }
+        // 身份检查：只清除本次停止的实例，避免迟到的停止流程误清掉新 Server
+        if (wsServer == current) {
             wsServer = null;
         }
+        return true;
     }
 
+    /**
+     * 按新配置重建 Server
+     *
+     * <p><b>旧 Server 未确认停止时不启动新 Server</b>：此时监听端口可能仍被旧实例占用，
+     * 直接 bind 只会异步失败（{@code onError} → 清空引用），结果既没有服务、
+     * 又失去了对旧实例的跟踪。这里改为保留旧实例、明确报告失败，并让下一次
+     * {@code restart()} / {@code stop()} 再次尝试停止它。
+     */
     private void restartServer(List<String> messages) {
-        stopServer(messages, WebsocketConstantMessage.Server.RELOADING);
+        if (!stopServer(messages, WebsocketConstantMessage.Server.RELOADING)) {
+            messages.add(WebsocketConstantMessage.Server.RESTART_SKIPPED);
+            return;
+        }
         if (this.config.get(ConfigKeys.WebSocket.ENABLE)) {
             startServer(messages);
         }
@@ -384,7 +446,12 @@ public class WebsocketManager {
                 return messages;
             }
             if (started) {
-                // Client 已启动时保持幂等；如果先前 Server 绑定失败，则允许单独重试 Server。
+                // 上次 Server 启动失败时引用会被保留（异常回调不再清引用）：只有确认其
+                // selector 线程已退出（与 stopBounded 同一判据）才清理，然后允许重试绑定。
+                if (wsServer != null && wsServer.isTerminated()) {
+                    stopServer(messages, WebsocketConstantMessage.Server.STALE_SERVER_CLEANED);
+                }
+                // Client 已启动时保持幂等；Server 不存在（或刚被清理）时允许单独重试。
                 if (wsServer == null && this.config.get(ConfigKeys.WebSocket.ENABLE)) {
                     startServer(messages);
                 } else {
@@ -408,6 +475,9 @@ public class WebsocketManager {
      *
      * <p>这是唯一会销毁共享调度器的路径。
      *
+     * <p>若上一次停止未能确认 Server 终止（引用被保留），重复调用本方法会<b>再次尝试</b>
+     * 停止它——否则旧实例与监听端口会永久失联。
+     *
      * <p><b>不回执</b>：见 {@link #start()}。
      *
      * @param code   关闭码
@@ -415,17 +485,118 @@ public class WebsocketManager {
      * @return 本应展示给用户的进度消息，按发生顺序排列
      */
     public List<String> stop(int code, String reason) {
+        return stopWithResult(code, reason).messages();
+    }
+
+    /**
+     * 永久停止，并返回"WebSocket Server 是否确认终止"的明确结果
+     *
+     * <p>与 {@link #stop(int, String)} 的差别只在返回值：{@code stop} 的进度消息里
+     * 虽然带有超时提示，但调用方只能靠解析文本判断成败。需要据此上报关闭结果的
+     * 调用方（例如 {@code QueQiaoRuntime#shutdownResources()}）应使用本方法。
+     *
+     * <p><b>对 WebSocket Client 的语义</b>：只发出停止请求并禁止后续自动重连
+     * （{@code WsClient#stopWithoutReconnect} → {@code close(code, reason)}），
+     * <b>不等待</b>对端关闭握手完成，也不确认底层连接已完全释放。
+     * 因此返回值中的"成功"只覆盖 Server 侧。
+     *
+     * <p><b>停止未确认时不会丢弃引用</b>：{@code wsServer} 仍被保留，
+     * 因此重复调用本方法会再次尝试停止旧实例（见 {@link #stopServer(List, String)}）。
+     *
+     * @param code   关闭码
+     * @param reason 关闭原因
+     * @return 停止结果，包含"WebSocket Server 是否确认终止"与进度消息
+     */
+    public StopResult stopWithResult(int code, String reason) {
         synchronized (lifecycleLock) {
             List<String> messages = new ArrayList<>();
-            if (destroyed) {
+            if (destroyed && wsServer == null) {
                 utils.debugLog("WebsocketManager 已销毁，忽略重复停止");
-                return messages;
+                return new StopResult(true, messages);
             }
             destroyed = true;
             started = false;
+            handleProtocolMessage.closeDispatch();
             stopClients(code, reason, messages);
-            stopServer(messages, reason);
+            boolean serverStopped = stopServer(messages, reason);
             shutdownReconnectScheduler();
+            return new StopResult(serverStopped, messages);
+        }
+    }
+
+    /**
+     * 停止结果
+     *
+     * <p>只表达"这一次停止操作观察到的状态"，不承担历史实例管理：
+     * 失败时旧 Server 引用仍留在 Manager 内，由下一次 {@code stop} / {@code restart} 重试。
+     *
+     * <p><b>范围限定</b>：本结果只描述 WebSocket <b>Server</b>，
+     * 不描述 WebSocket Client（Client 是异步关闭，见 {@link #stopWithResult(int, String)}）。
+     */
+    public static final class StopResult {
+
+        private final boolean serverStopped;
+        private final List<String> messages;
+
+        private StopResult(boolean serverStopped, List<String> messages) {
+            this.serverStopped = serverStopped;
+            this.messages = Collections.unmodifiableList(new ArrayList<>(messages));
+        }
+
+        /**
+         * WebSocket Server 是否不存在或已确认终止（selector 线程已退出）
+         *
+         * <p>只覆盖 Server：<b>不</b>表示所有 WebSocket Client 已完成关闭，
+         * 也不表示它们的关闭握手已经结束。
+         *
+         * @return true 表示没有 Server，或已确认 selector 线程退出（端口已释放）
+         */
+        public boolean isServerStopped() {
+            return serverStopped;
+        }
+
+        /**
+         * @return 本应展示给用户的进度消息（不可修改）
+         */
+        public List<String> messages() {
+            return messages;
+        }
+    }
+
+    /**
+     * 临时暂停所有 endpoint（幂等，不销毁共享调度器）
+     *
+     * <p>与 {@link #stop(int, String)} 的区别：本方法只停止 Client 与 Server，
+     * <b>保留</b> Manager 实例、配置能力与共享重连调度器，因此可以在配置切换过程中
+     * "先停止接入 → 换掉依赖配置的组件 → 再按新配置重启"。
+     *
+     * <p>暂停期间不会有新的协议请求进入 Runtime。调用方必须在流程结束后调用
+     * {@link #restart(Config)} 恢复（即使中间步骤失败），否则 WebSocket 会一直停服。
+     *
+     * <p><b>停止是"有界"的</b>：最多等待 {@link #SERVER_STOP_JOIN_TIMEOUT_MILLIS} 毫秒，
+     * 超时后由 {@link WsServer#stopBounded(int, String)} 中断 selector 线程。
+     * 超时不会抛出异常——调用方应继续执行后续步骤（例如强制中止 RCON），
+     * 正是那些步骤能让阻塞在协议回调里的工作线程退出。超时信息会作为一条进度消息返回，
+     * 不会静默吞掉。
+     *
+     * <p>本方法<b>不会</b>设置 {@code destroyed} 标记，也不关闭 {@code reconnectScheduler}——
+     * 那两件事只属于 {@link #stop(int, String)} 这条永久销毁路径。
+     *
+     * @return 本应展示给用户的进度消息，按发生顺序排列
+     */
+    public List<String> suspend() {
+        synchronized (lifecycleLock) {
+            List<String> messages = new ArrayList<>();
+            if (destroyed) {
+                utils.debugLog("WebsocketManager 已销毁，忽略暂停请求");
+                return messages;
+            }
+            // 先关闭分发门控，再停止连接：门控关闭后到达的报文不再进入协议处理
+            handleProtocolMessage.closeDispatch();
+            stopClients(CLOSE_CODE_NORMAL, WebsocketConstantMessage.CLOSE_BY_RELOAD, messages);
+            // 停止未确认时 stopServer 会保留旧实例并自行追加超时消息，这里不再重复处理
+            stopServer(messages, WebsocketConstantMessage.Server.RELOADING);
+            started = false;
             return messages;
         }
     }
@@ -449,6 +620,8 @@ public class WebsocketManager {
                 return messages;
             }
             this.config = Objects.requireNonNull(newConfig, "newConfig");
+            // 恢复分发：暂停时关闭的门控在这里重新开放
+            handleProtocolMessage.openDispatch();
             restartClients(messages);
             restartServer(messages);
             started = true;
@@ -470,6 +643,16 @@ public class WebsocketManager {
     /**
      * 分发事件到所有接收方
      *
+     * <p><b>生命周期门控</b>：只接受"全局启用 + Manager 已启动且未销毁"时发起的事件。
+     * 全局开关（{@code ConfigKeys.ENABLE}）、生命周期状态与接收方快照在同一个
+     * {@link #lifecycleLock} 临界区内确定，因此 {@link #suspend()} /
+     * {@link #stop(int, String)} / {@link #restart(Config)} 与发送请求有明确的先后关系：
+     * <ul>
+     *     <li>发送先拿到锁并通过检查 → 该事件视为在停止之前已被接受，允许继续完成；</li>
+     *     <li>停止先拿到锁并完成状态切换 → 之后到达的发送请求一律被拒绝。</li>
+     * </ul>
+     * 本方法<b>不等待</b>已接受的发送完成，因此 {@code stop()} 返回不代表此前的事件都已发送完毕。
+     *
      * <p>线程模型：序列化与分发都在<b>调用线程</b>上同步完成。
      * 这是有意为之——实测单次事件序列化约 1~2.3 µs，每 tick 100 个事件仅占
      * 50 ms tick 预算的 0.5% 左右；而改为异步会引入"队列溢出如何处理"与
@@ -481,13 +664,16 @@ public class WebsocketManager {
      * @param event 事件
      */
     public void sendEvent(BaseEvent event) {
-        if (!this.config.get(ConfigKeys.ENABLE)) {
-            return;
-        }
-
         List<WsClient> wsClientSnapshot;
         WsServer wsServerSnapshot;
         synchronized (lifecycleLock) {
+            // 全局开关必须与生命周期状态、接收方快照在同一临界区确定：
+            // 若在锁外读取，reload 期间可能先读到旧配置的 enable=true，随后被挂起，
+            // 等配置已改为 false 且 restart() 恢复 started 之后再进锁，事件就会穿过门控。
+            if (!this.config.get(ConfigKeys.ENABLE) || !started || destroyed) {
+                utils.debugLog("WebsocketManager 未启用、未启动或已销毁，事件未分发");
+                return;
+            }
             wsClientSnapshot = new ArrayList<>(wsClientList);
             wsServerSnapshot = wsServer;
         }

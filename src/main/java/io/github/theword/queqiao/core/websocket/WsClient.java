@@ -147,6 +147,14 @@ public class WsClient extends WebSocketClient {
      */
     @Override
     public void onOpen(ServerHandshake serverHandshake) {
+        // stop 与 reconnect 竞态：super.reconnect() 内部是 reset()（重建 engine）+ connect()，
+        // 若 stop() 发生在两者之间，它关闭的是旧 engine，新连接仍会建立并回调到这里。
+        // 此处兜底：已停止的实例不允许保留活动连接。
+        if (this.stopped) {
+            this.logger.warn(WebsocketConstantMessage.Client.STOPPED_DISCARD_CONNECTION, getURI());
+            close();
+            return;
+        }
         this.logger.info(WebsocketConstantMessage.Client.CONNECT_SUCCESSFUL, getURI());
         synchronized (this.reconnectLock) {
             this.reconnectGeneration++;
@@ -166,7 +174,9 @@ public class WsClient extends WebSocketClient {
      */
     @Override
     public void onMessage(String message) {
-        if (!this.enabled) {
+        // stopped 是唯一可靠的"是否还需要维持连接"判据：停止后即使有迟到帧（例如
+        // stop 与 reconnect 并发导致连接短暂建立），也不得进入业务处理。
+        if (this.stopped || !this.enabled) {
             return;
         }
         try {
@@ -322,6 +332,14 @@ public class WsClient extends WebSocketClient {
             this.logger.warn("WebSocket {} 重连执行异常：{}", getURI(), e.getMessage(), e);
         } finally {
             this.reconnectInProgress.set(false);
+        }
+
+        // reconnect() 期间可能已执行 stop()：generation 拦不住已经开始的重连，
+        // 而 reset() 重建了 engine，使 stop() 的 close() 作用在旧 engine 上。
+        // 这里补一次关闭，避免"已停止的实例仍持有一条活动连接"。
+        if (this.stopped) {
+            utils.debugLog("WebSocket {} 在重连完成时已停止，关闭本次建立/残留的连接", getURI());
+            close();
         }
     }
 

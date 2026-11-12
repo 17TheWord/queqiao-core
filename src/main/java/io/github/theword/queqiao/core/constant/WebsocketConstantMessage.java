@@ -29,10 +29,43 @@ public class WebsocketConstantMessage {
         public static final String MESSAGE_HANDLE_FAILED = CONNECT_TO + "处理收到的消息时发生异常，已忽略该消息";
         public static final String URI_SYNTAX_ERROR = CONNECT_TO + "WebSocket URL 格式错误，无法连接！";
         public static final String MAX_RECONNECT_ATTEMPTS_REACHED = CONNECT_TO + "重连次数达到最大值，将不再自动重连，请使用命令手动重连！";
+
+        /**
+         * 已停止的客户端在重连竞态下建立了连接时的提示
+         *
+         * <p>参数：URI。此时连接会被立即关闭，不进入业务处理。
+         */
+        public static final String STOPPED_DISCARD_CONNECTION = CONNECT_TO + "WebSocket Client 已停止，丢弃竞态中建立的连接。";
     }
 
     public static class Server {
         public static final String ERROR_ON_STOPPING = "Websocket Server 正在启动时出现异常。";
+
+        /**
+         * 停止超时提示
+         *
+         * <p>参数：等待上限（毫秒）。语义刻意区分"已停止"与"未能确认停止"：
+         * 超时后会中断 selector 线程，但线程若仍未退出，监听端口可能尚未释放。
+         */
+        public static final String STOP_TIMEOUT =
+                "Websocket Server 未在 {} ms 内确认停止，已中断 selector 线程；若其仍未退出，端口可能仍在监听。";
+
+        /**
+         * 停止未确认时跳过启动新 Server 的提示
+         *
+         * <p>此时端口可能仍被旧实例占用，直接 bind 只会静默失败，
+         * 因此保留旧实例并等待下一次 reload / 停止重试。
+         */
+        public static final String RESTART_SKIPPED =
+                "旧 Websocket Server 尚未确认停止，本次不启动新的 Server；请稍后重试。";
+
+        /**
+         * 启动阶段清理"已确认终止"的残留实例时使用的原因
+         *
+         * <p>服务端级异常回调不再清空引用，因此再次启动时需要先确认旧实例已终止，
+         * 才能清掉引用并重新绑定端口。
+         */
+        public static final String STALE_SERVER_CLEANED = "Websocket Server 实例已确认终止，清理残留引用";
 
         public static final String BROADCAST_MESSAGE = "向所有客户端广播消息：{}";
         public static final String RELOADING = "Websocket Server 正在重载";

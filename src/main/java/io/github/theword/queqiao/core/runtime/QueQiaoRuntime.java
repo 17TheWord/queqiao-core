@@ -71,10 +71,24 @@ public final class QueQiaoRuntime {
     private final AtomicReference<RuntimeState> state = new AtomicReference<>(RuntimeState.NEW);
 
     /**
-     * 串行化 {@code start()} / {@code reload()} / {@code shutdown()} 的生命周期锁。
-     * 它不替代 Config / WebSocket / RCON 各自的同步机制。
+     * 状态锁：只用于"检查状态 + 迁移状态"这类瞬时操作。
+     *
+     * <p><b>不得</b>在持有它时执行配置文件 IO、RCON 连接、WebSocket 停止/启动或线程 join。
+     * 长操作由 {@link #operationLock} 串行化。
      */
     private final Object lifecycleLock = new Object();
+
+    /**
+     * 操作锁：串行化 {@code start()} / {@code reload()} / {@code shutdown()} 的<b>长操作</b>
+     *
+     * <p>它保证"配置加载、RCON 切换、WebSocket 停止/启动"这些慢步骤之间不会交错，
+     * 也保证 {@code shutdown()} 不会与尚未完成的 {@code reload()} 并发销毁组件
+     * （关闭会等当前操作结束后再开始清理）。
+     *
+     * <p>与 {@link #lifecycleLock} 的获取顺序固定为 {@code operationLock → lifecycleLock}，
+     * 不存在反向路径，因此不会死锁。
+     */
+    private final Object operationLock = new Object();
 
     // ------------------------------------------------------------------
     // 构造后不再变化的字段：用 final 保证安全发布
@@ -132,10 +146,73 @@ public final class QueQiaoRuntime {
 
     private volatile WebsocketManager websocketManager;
 
-    /** 串行化 Runtime 对 RCON 客户端的创建、替换和关闭。 */
+    /**
+     * 保护 {@link #rconState} 快照的发布与读取
+     *
+     * <p>只承载"读快照 / 换快照"这类瞬时操作：建立连接、关闭连接等网络与 Socket 操作
+     * 一律在锁外执行，避免关闭旧客户端时被在途命令拖住。
+     */
     private final Object rconLifecycleLock = new Object();
 
-    private volatile RconClient rconClient;
+    private volatile RconState rconState = RconState.DISABLED;
+
+    /**
+     * 最近一次关闭流程中<b>观察到的</b>明确失败或未能确认的停止结果
+     *
+     * <p>空列表表示：本次关闭流程<b>没有观察到明确的资源停止失败</b>。
+     * 它<b>不</b>表示所有资源都已确认释放——例如 WebSocket Client 采用异步 close，
+     * 关闭请求发出后不等对端握手完成，因此"没有失败记录"不等于"连接已完全关闭"。
+     *
+     * <p>非空表示关闭流程<b>已执行完毕</b>，但下列资源未能确认停止（详见对应 ERROR 日志）。
+     *
+     * <p>存在的原因：{@link RuntimeState#STOPPED} 只能表达"关闭流程结束"，
+     * 不能表达"所有底层资源都已释放"。本字段是二者的最小区分手段，
+     * 不引入历史实例管理，也不改变状态机。
+     */
+    private volatile List<String> shutdownFailures = Collections.emptyList();
+
+    /**
+     * RCON 的不可变状态快照
+     *
+     * <p>"是否启用"与"当前客户端"必须<b>同时生效</b>：若用两个独立的 volatile 字段表达，
+     * 调用方就可能读到"新配置 + 旧客户端"的混合状态（reload 期间命令被发往旧 Host）。
+     * {@link #sendRconCommand(String)} 只读取一次快照，因此每次调用看到的都是完整状态。
+     *
+     * <p>实例一旦发布就不再修改；切换时构造新实例并整体替换。
+     */
+    private static final class RconState {
+
+        /** 未启用（也是关闭后的终态） */
+        private static final RconState DISABLED = new RconState(false, null);
+
+        private final boolean enabled;
+        private final RconClient client;
+
+        private RconState(boolean enabled, RconClient client) {
+            this.enabled = enabled;
+            this.client = client;
+        }
+
+        private boolean enabled() {
+            return enabled;
+        }
+
+        /**
+         * @return 当前生效的客户端；{@code null} 表示"已启用但暂无可用连接"
+         */
+        private RconClient client() {
+            return client;
+        }
+    }
+
+    /**
+     * RCON 切换代次
+     *
+     * <p>每次"摘除旧引用"时递增。切换流程在锁外建连完成后，只有代次未变时才允许发布
+     * 新客户端——避免迟到的切换结果覆盖更新的状态（例如已进入关闭流程）。
+     * 由 {@link #rconLifecycleLock} 保护。
+     */
+    private int rconGeneration;
 
     private volatile JsonElement messagePrefixJsonElement;
 
@@ -521,11 +598,13 @@ public final class QueQiaoRuntime {
      * 也不会出现"抛异常却留下半启动 Runtime"的状态。
      */
     public void start() {
-        synchronized (lifecycleLock) {
-            if (state.get() != RuntimeState.NEW) {
-                throw new IllegalStateException("QueQiaoRuntime 当前状态不允许启动: " + state.get());
+        synchronized (operationLock) {
+            synchronized (lifecycleLock) {
+                if (state.get() != RuntimeState.NEW) {
+                    throw new IllegalStateException("QueQiaoRuntime 当前状态不允许启动: " + state.get());
+                }
+                state.set(RuntimeState.STARTING);
             }
-            state.set(RuntimeState.STARTING);
 
             try {
                 doStart();
@@ -570,8 +649,10 @@ public final class QueQiaoRuntime {
         serverStatusCollector.initPingTarget();
         serverStatusCollector.startRefreshScheduler(
                 config.get(ConfigKeys.Status.REFRESH_INTERVAL_SECONDS));
-        initWebsocketManager();
+        // 先初始化 RCON，再开放 WebSocket：避免"WebSocket 已经在接收请求，而 RCON 还没准备好"
+        // 的启动窗口。RCON 连接失败只会让 RCON 请求得到明确的不可用响应，不影响其它功能启动。
         initRconClient();
+        initWebsocketManager();
     }
 
     /**
@@ -580,28 +661,70 @@ public final class QueQiaoRuntime {
      * <p>只允许对 {@link RuntimeState#RUNNING} 的 Runtime 调用，其余状态抛
      * {@link IllegalStateException}。
      *
+     * <p><b>时序</b>：先暂停 WebSocket 接入 → 加载配置 → <b>切换 RCON</b> →
+     * 更新其它依赖配置的组件 → 最后按（新）配置恢复 WebSocket。
+     * RCON 切换紧跟配置加载，保证 WebSocket 恢复时使用的 RCON 客户端已与当前配置一致；
+     * 这样新旧连接也不会在"请求仍在流入"的窗口内交错，关闭旧 RCON 更不需要等待在途命令。
+     *
+     * <p><b>恢复必须发生</b>：Endpoint 的恢复位于 {@code finally}，即使配置非法或
+     * RCON 切换失败也不会让 WebSocket 永久停服；若恢复本身失败且已有原始异常，
+     * 两个异常都会被保留（后者作为 suppressed）。
+     *
      * <p>不回执：进度消息作为 {@link ReloadResult} 返回，由调用方决定如何展示。
      *
      * @return 重载结果，携带本应展示给用户的进度消息
      */
     public ReloadResult reload() {
-        synchronized (lifecycleLock) {
-            if (state.get() != RuntimeState.RUNNING) {
-                throw new IllegalStateException("QueQiaoRuntime 当前状态不允许 reload: " + state.get());
+        synchronized (operationLock) {
+            synchronized (lifecycleLock) {
+                if (state.get() != RuntimeState.RUNNING) {
+                    throw new IllegalStateException("QueQiaoRuntime 当前状态不允许 reload: " + state.get());
+                }
             }
 
-            loadConfig();
-            messagePrefixJsonElement = initMessagePrefixJsonObject(config.get(ConfigKeys.MESSAGE_PREFIX));
-            platformContext.getTranslationService()
-                    .reload(config.get(ConfigKeys.ENABLE_TRANSLATION));
-            serverStatusCollector.initPingTarget();
-            serverStatusCollector.updateRefreshInterval(config.get(ConfigKeys.Status.REFRESH_INTERVAL_SECONDS));
             List<String> messages = new ArrayList<>();
             WebsocketManager manager = websocketManager;
-            if (manager != null) {
-                messages.addAll(manager.restart(config));
+            // 只要 Manager 存在就必须在 finally 中恢复：即使 suspend() 中途抛异常，
+            // 也不能把 WebSocket 留在停服状态。
+            boolean restoreEndpoints = manager != null;
+            Throwable reloadFailure = null;
+
+            try {
+                if (manager != null) {
+                    // 先停止接入：RCON 切换期间不应再有新的协议请求进入 Runtime。
+                    messages.addAll(manager.suspend());
+                }
+
+                loadConfig();
+                // RCON 引用切换放在配置加载之后的第一位：
+                //   1. finally 恢复 WebSocket 时，实际生效的 RCON 客户端一定与当前配置一致；
+                //   2. 旧客户端的在途命令会被立即中止，从而释放占着解码线程的协议回调——
+                //      正是它让 selector 卡在缓冲区等待上（见 WebsocketManager#suspend 的有界等待）。
+                if (!switchRconClient(config.snapshot())) {
+                    logger.info("Rcon 已根据新配置禁用并关闭连接");
+                }
+                messagePrefixJsonElement = initMessagePrefixJsonObject(config.get(ConfigKeys.MESSAGE_PREFIX));
+                platformContext.getTranslationService()
+                        .reload(config.get(ConfigKeys.ENABLE_TRANSLATION));
+                serverStatusCollector.initPingTarget();
+                serverStatusCollector.updateRefreshInterval(config.get(ConfigKeys.Status.REFRESH_INTERVAL_SECONDS));
+            } catch (RuntimeException | Error e) {
+                reloadFailure = e;
+                throw e;
+            } finally {
+                if (restoreEndpoints) {
+                    try {
+                        // 配置加载失败时 config 仍是原配置，因此这里等价于"按原配置恢复"。
+                        messages.addAll(manager.restart(config));
+                    } catch (RuntimeException | Error restartError) {
+                        if (reloadFailure != null) {
+                            reloadFailure.addSuppressed(restartError);
+                        } else {
+                            throw restartError;
+                        }
+                    }
+                }
             }
-            restartRconClient();
             return new ReloadResult(messages);
         }
     }
@@ -613,17 +736,27 @@ public final class QueQiaoRuntime {
      * {@code NEW} 与 {@code FAILED} 保持原状态不变（因此"先 shutdown 再 start"仍然可行），
      * {@code STOPPED} / {@code STOPPING} 为 no-op。
      *
-     * <p>与 {@link #start()} 共享生命周期锁，不会中断进行中的启动。
+     * <p><b>关闭结果语义</b>：{@link RuntimeState#STOPPED} 表示<b>关闭流程已执行完毕</b>，
+     * 不代表所有底层资源都已确认释放。各资源的确认程度不同（详见 {@link #shutdownResources()}），
+     * 其中 WebSocket Client 采用异步 close，不等待对端关闭握手完成。
+     *
+     * <p><b>各资源独立清理</b>：某项失败不会阻止其余资源继续停止。失败会记 ERROR 日志，
+     * 并可通过 {@link #getShutdownFailures()} 读取；该列表为空只表示
+     * <b>没有观察到明确的资源停止失败</b>。
+     *
+     * <p>与 {@link #start()} 共享 {@link #operationLock}：不会中断进行中的启动，
+     * 也会等待尚未完成的 {@code reload()} 结束后才开始清理，避免并发销毁组件。
      */
     public void shutdown() {
-        synchronized (lifecycleLock) {
-            RuntimeState current = state.get();
-            if (current != RuntimeState.RUNNING) {
-                // NEW / FAILED / STOPPED / STOPPING 均为 no-op（STARTING 因共享同一把锁而不可达）
-                return;
+        synchronized (operationLock) {
+            synchronized (lifecycleLock) {
+                if (state.get() != RuntimeState.RUNNING) {
+                    // NEW / FAILED / STOPPED / STOPPING 均为 no-op
+                    return;
+                }
+                state.set(RuntimeState.STOPPING);
             }
 
-            state.set(RuntimeState.STOPPING);
             try {
                 shutdownResources();
             } finally {
@@ -631,7 +764,12 @@ public final class QueQiaoRuntime {
                 // STOPPING 卡成永久 no-op，破坏幂等语义
                 state.set(RuntimeState.STOPPED);
             }
-            logger.info("鹊桥已关闭");
+            // STOPPED 只表示"关闭流程执行完毕"；资源是否真的全部释放由 shutdownFailures 表达
+            if (shutdownFailures.isEmpty()) {
+                logger.info("鹊桥关闭流程已执行完毕（未观察到明确的资源停止失败）");
+            } else {
+                logger.error("鹊桥关闭流程已执行完毕，但以下资源未确认停止：{}", shutdownFailures);
+            }
         }
     }
 
@@ -639,28 +777,119 @@ public final class QueQiaoRuntime {
      * 清理 Runtime 管理生命周期的资源，并停用平台翻译服务；
      * 顺序为状态采集器 → WebSocket → RCON → 翻译服务。
      *
+     * <p><b>各步骤相互隔离</b>：任何一步抛出异常或报告失败，都不会阻止后续步骤执行。
+     * 失败会记录 ERROR 日志并汇总到 {@link #getShutdownFailures()}。
+     *
+     * <p><b>各资源的确认程度不同</b>，这正是"关闭流程执行完毕"不等于"所有资源已释放"的原因：
+     * <ul>
+     *     <li>{@code ServerStatusCollector}：只确认 {@code stopRefreshScheduler()} 正常返回，
+     *         不推断其内部任务已瞬间终止；</li>
+     *     <li>{@code WebsocketManager}：只确认 WebSocket Server 的 selector 线程已退出
+     *         （{@link WebsocketManager.StopResult#isServerStopped()}）；
+     *         <b>不</b>保证 WebSocket Client 的关闭握手已完成（那是异步 close）；</li>
+     *     <li>{@code RconClient}：只确认 {@code abort()} 成功且连接引用被清除
+     *         （{@code isConnected()} 为 false），不推断对端已处理完关闭；</li>
+     *     <li>{@code TranslationService}：只确认 {@code disable()} 正常返回，
+     *         不推断平台外部资源状态。</li>
+     * </ul>
+     *
      * <p>每一项自身幂等，因此本方法可被"启动失败回滚"与"正常关闭"共用。
      */
     private void shutdownResources() {
-        serverStatusCollector.stopRefreshScheduler();
+        List<String> failures = new ArrayList<>();
+
+        try {
+            serverStatusCollector.stopRefreshScheduler();
+        } catch (RuntimeException | Error e) {
+            recordShutdownFailure(failures, "ServerStatusCollector", e);
+        }
 
         WebsocketManager manager = websocketManager;
         if (manager != null) {
-            manager.stop(1000, WebsocketConstantMessage.SHUTDOWN);
-            websocketManager = null;
+            boolean released = false;
+            try {
+                WebsocketManager.StopResult result = manager.stopWithResult(
+                        1000, WebsocketConstantMessage.SHUTDOWN);
+                released = result.isServerStopped();
+                if (!released) {
+                    // 不只看异常：Manager 通过返回值报告"Server 未确认停止"
+                    String detail = "WebSocket Server 未确认停止（selector 线程可能仍在运行，端口可能仍在监听）";
+                    failures.add("WebsocketManager: " + detail);
+                    logger.error("关闭资源失败：WebsocketManager - {}", detail);
+                }
+            } catch (RuntimeException | Error e) {
+                recordShutdownFailure(failures, "WebsocketManager", e);
+            }
+            // 只有确认 Server 已停止才断开管理入口：否则 Manager 内仍保留着未终止的 Server，
+            // 清空引用会让它彻底失联（既无法再停止，也无法判断端口是否仍被占用）。
+            if (released) {
+                websocketManager = null;
+            }
         }
 
-        synchronized (rconLifecycleLock) {
-            RconClient client = rconClient;
-            rconClient = null;
-            if (client != null) {
+        RconClient client = null;
+        try {
+            synchronized (rconLifecycleLock) {
+                client = rconState.client();
+                rconState = RconState.DISABLED;
+                // 递增代次：任何仍在进行的切换都不得再把客户端发布回来
+                rconGeneration++;
+            }
+        } catch (RuntimeException | Error e) {
+            recordShutdownFailure(failures, "RconClient(引用摘除)", e);
+        }
+        if (client != null) {
+            try {
+                // 关闭在锁外执行：stop() 只关闭 Socket、不等待在途命令，
+                // 但仍不应把 Socket 操作放进保护引用的临界区。
                 client.stop();
+                // stop() 内部会吞掉 abort 异常并保留连接引用，因此"没抛异常"不等于"已释放"。
+                // isConnected() 在这里的含义是"仍持有连接引用"，即未能确认释放。
+                if (client.isConnected()) {
+                    String detail = "连接未确认释放（abort 失败，连接引用仍被保留）";
+                    failures.add("RconClient: " + detail);
+                    logger.error("关闭资源失败：RconClient - {}", detail);
+                }
+            } catch (RuntimeException | Error e) {
+                recordShutdownFailure(failures, "RconClient", e);
             }
         }
 
         // 翻译服务由平台持有，这里只负责按生命周期停用。disable() 幂等，
         // 且 TranslationService 构造不读磁盘，因此"从未加载过"时调用也无副作用。
-        platformContext.getTranslationService().disable();
+        try {
+            platformContext.getTranslationService().disable();
+        } catch (RuntimeException | Error e) {
+            recordShutdownFailure(failures, "TranslationService", e);
+        }
+
+        shutdownFailures = Collections.unmodifiableList(failures);
+    }
+
+    /**
+     * 记录一条关闭失败：写入汇总列表并输出 ERROR 日志
+     *
+     * @param failures 本次关闭的失败汇总
+     * @param resource 资源名称
+     * @param error    导致失败的异常
+     */
+    private void recordShutdownFailure(List<String> failures, String resource, Throwable error) {
+        String detail = error.getClass().getSimpleName() + ": " + error.getMessage();
+        failures.add(resource + ": " + detail);
+        logger.error("关闭资源失败：{} - {}", resource, detail, error);
+    }
+
+    /**
+     * 返回关闭过程中观察到的明确失败或未能确认的停止结果
+     *
+     * <p>空列表只代表<b>没有观察到明确的资源停止失败</b>，不代表所有资源都已释放：
+     * 各资源的确认程度本就不同（见 {@link #shutdownResources()}），
+     * 其中 WebSocket Client 是异步关闭，不会等待对端关闭握手完成。
+     *
+     * @return 未能确认停止的资源说明；空列表表示未观察到明确失败
+     */
+    public List<String> getShutdownFailures() {
+        return shutdownFailures;
     }
 
     /**
@@ -687,55 +916,93 @@ public final class QueQiaoRuntime {
         websocketManager.start();
     }
 
+    /**
+     * 按当前配置初始化 RCON 客户端
+     *
+     * <p>建连是网络 IO，必须在 {@code rconLifecycleLock} 之外进行；锁只用于发布引用。
+     * 连接失败不抛异常——客户端保持未连接状态，后续 RCON 请求得到明确的不可用结果，
+     * 其它功能（含 WebSocket）照常启动。
+     */
     private void initRconClient() {
-        synchronized (rconLifecycleLock) {
-            ConfigSnapshot configSnapshot = config.snapshot();
-            if (configSnapshot.valueOf(ConfigKeys.Rcon.ENABLE)) {
-                RconClient client = createRconClient(configSnapshot);
-                client.connect();
-                rconClient = client;
-            } else {
-                rconClient = null;
-                logger.info("Rcon 未启用，跳过 Rcon 客户端初始化");
-            }
+        if (!switchRconClient(config.snapshot())) {
+            logger.info("Rcon 未启用，跳过 Rcon 客户端初始化");
         }
     }
 
-    private void restartRconClient() {
-        synchronized (rconLifecycleLock) {
-            RconClient previous = rconClient;
-            ConfigSnapshot configSnapshot = config.snapshot();
-            if (!configSnapshot.valueOf(ConfigKeys.Rcon.ENABLE)) {
-                rconClient = null;
-                if (previous != null) {
-                    previous.stop();
-                    logger.info("Rcon 已根据新配置禁用并关闭连接");
-                }
-                return;
-            }
+    /**
+     * 按当前配置替换 RCON 客户端
+     *
+     * <p>顺序（锁内只做引用操作，锁外做网络操作）：
+     * <ol>
+     *     <li>锁内<b>摘除</b>旧引用并递增代次——此后 {@code sendRconCommand()} 一律得到
+     *         {@code DISCONNECTED}，绝不会再使用旧客户端；</li>
+     *     <li>锁外停止旧客户端（不等待在途命令）；</li>
+     *     <li>锁外建立新连接；</li>
+     *     <li>锁内按代次发布——只有本次切换仍然有效时才发布。</li>
+     * </ol>
+     *
+     * <p>连接失败（IO / 认证）只让新客户端保持未连接状态，<b>不回退</b>到旧客户端；
+     * 非受检异常原样抛给调用方，此时旧客户端已停止、新客户端未发布，RCON 保持不可用。
+     *
+     * @param snapshot 本次切换使用的配置快照
+     * @return true 表示配置启用了 RCON（已尝试发布新客户端）；false 表示已禁用
+     */
+    private boolean switchRconClient(ConfigSnapshot snapshot) {
+        boolean enabled = snapshot.valueOf(ConfigKeys.Rcon.ENABLE);
 
-            RconClient replacement = createRconClient(configSnapshot);
-            replacement.connect();
-            // 先发布新客户端，再关闭旧客户端；已经拿到旧引用的调用由旧客户端自身串行化。
-            rconClient = replacement;
-            if (previous != null) {
-                previous.stop();
+        RconClient previous;
+        int generation;
+        synchronized (rconLifecycleLock) {
+            previous = rconState.client();
+            // 一次性发布"新配置 + 无客户端"：切换期间命令一律得到 DISCONNECTED，
+            // 绝不会出现"新配置 + 旧客户端"的组合
+            rconState = enabled ? new RconState(true, null) : RconState.DISABLED;
+            generation = ++rconGeneration;
+        }
+
+        if (previous != null) {
+            // 锁外停止：不等待在途命令，也不会把 Socket 操作放进临界区
+            previous.stop();
+        }
+
+        if (!enabled) {
+            return false;
+        }
+
+        RconClient replacement = createRconClient(snapshot);
+        // 锁外建连：IO / 认证失败只记录日志，客户端保持未连接；非受检异常向上抛出
+        replacement.connect();
+
+        boolean published;
+        synchronized (rconLifecycleLock) {
+            published = generation == rconGeneration;
+            if (published) {
+                // 一次性发布完整状态：启用标志与客户端同时生效
+                rconState = new RconState(true, replacement);
             }
         }
+        if (!published) {
+            // 期间已进入关闭流程或发起了新的切换：丢弃这个迟到的客户端
+            replacement.stop();
+        }
+        return true;
     }
 
     private RconClient createRconClient(ConfigSnapshot source) {
         return new RconClient(
                 logger,
+                source.valueOf(ConfigKeys.Rcon.HOST),
                 source.valueOf(ConfigKeys.Rcon.PORT),
                 source.valueOf(ConfigKeys.Rcon.PASSWORD));
     }
 
     public String sendRconCommand(String command) throws RconException {
-        if (!config.get(ConfigKeys.Rcon.ENABLE)) {
+        // 只读一次快照：启用标志与客户端必须来自同一个状态，避免读到"新配置 + 旧客户端"
+        RconState state = rconState;
+        if (!state.enabled()) {
             throw RconException.disabled();
         }
-        RconClient client = rconClient;
+        RconClient client = state.client();
         if (client == null) {
             throw RconException.disconnected();
         }

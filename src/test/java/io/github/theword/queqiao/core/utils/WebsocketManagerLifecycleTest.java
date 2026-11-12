@@ -3,10 +3,14 @@ package io.github.theword.queqiao.core.utils;
 import io.github.theword.queqiao.core.config.ConfigKeys;
 import io.github.theword.queqiao.core.config.schema.ConfigRegistry;
 import io.github.theword.queqiao.core.config.Config;
+import io.github.theword.queqiao.core.event.PlayerChatEvent;
 import io.github.theword.queqiao.core.handle.HandleProtocolMessage;
 import io.github.theword.queqiao.core.support.PlatformStubs;
 import io.github.theword.queqiao.core.websocket.WsClient;
+import io.github.theword.queqiao.core.websocket.WsServer;
 import com.google.gson.Gson;
+import org.java_websocket.client.WebSocketClient;
+import org.java_websocket.handshake.ServerHandshake;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
@@ -14,16 +18,27 @@ import org.slf4j.LoggerFactory;
 import org.yaml.snakeyaml.Yaml;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.URI;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -84,6 +99,14 @@ class WebsocketManagerLifecycleTest {
     @SuppressWarnings("unchecked")
     private static Map<String, Object> parse(String yaml) {
         return (Map<String, Object>) new Yaml().load(yaml);
+    }
+
+    /**
+     * 启用 WebSocket Server（Client 关闭）
+     */
+    private static Config serverConfig(int port) {
+        return runtimeOf("websocket_server:\n  enable: true\n  host: \"127.0.0.1\"\n  port: " + port
+                + "\nwebsocket_client:\n  enable: false\n");
     }
 
     private static WebsocketManager newManager(Config config) {
@@ -170,6 +193,258 @@ class WebsocketManagerLifecycleTest {
     }
 
     // ------------------------------------------------------------------
+    // 临时暂停（reload 协调）
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("suspend() 停止 Client 与 Server，但保留共享调度器，且可重复调用")
+    void suspendStopsEndpointsButKeepsScheduler() throws Exception {
+        int port = findFreePort();
+        WebsocketManager manager = newManager(serverConfig(port));
+        try {
+            manager.start();
+            WsServer server = manager.getWsServer();
+            assertNotNull(server, "启动后应存在 WebSocket Server");
+            ScheduledThreadPoolExecutor scheduler = manager.reconnectSchedulerForTest();
+
+            manager.suspend();
+
+            assertNull(manager.getWsServer(), "暂停后不应再持有 Server");
+            assertTrue(manager.getWsClientList().isEmpty(), "暂停后不应残留 Client");
+            assertFalse(scheduler.isShutdown(), "暂停不得销毁共享重连调度器");
+            assertTrue(awaitTerminated(server, 5_000L), "正常暂停应确认 selector 线程退出");
+
+            // 幂等：重复暂停不抛异常，也不会销毁调度器
+            manager.suspend();
+            assertFalse(scheduler.isShutdown(), "重复暂停仍不得销毁调度器");
+
+            // 恢复：restart 使用同一调度器重新启动 endpoint
+            manager.restart(serverConfig(port));
+            assertNotNull(manager.getWsServer(), "恢复后应重新启动 Server");
+            assertFalse(scheduler.isShutdown(), "恢复不得销毁调度器");
+        } finally {
+            manager.stop(1000, "test cleanup");
+        }
+    }
+
+    @Test
+    @DisplayName("已销毁的 Manager 上调用 suspend() 为安全 no-op")
+    void suspendAfterStopIsNoOp() {
+        WebsocketManager manager = newManager(disabledTransportsConfig());
+        manager.stop(1000, "test");
+
+        assertTrue(manager.suspend().isEmpty(), "已销毁后暂停应被安全忽略");
+        assertTrue(manager.reconnectSchedulerForTest().isShutdown(), "已销毁后不得复活调度器");
+    }
+
+    @Test
+    @DisplayName("Server 停止未确认时不启动第二个 Server，旧实例仍可再次停止")
+    void serverStopTimeoutKeepsOldServerAndSkipsRestart() throws Exception {
+        int port = findFreePort();
+        WebsocketManager manager = newManager(serverConfig(port));
+        CountDownLatch selectorStarted = new CountDownLatch(1);
+        CountDownLatch releaseSelector = new CountDownLatch(1);
+
+        // 故意忽略中断：模拟"selector 线程卡在无法打断的回调里"，使 stopBounded 无法确认终止
+        WsServer stuck = new WsServer(
+                new InetSocketAddress("127.0.0.1", port),
+                LOGGER,
+                HANDLE_PROTOCOL_MESSAGE,
+                "Server",
+                "",
+                true) {
+
+            @Override
+            public void onStart() {
+                super.onStart();
+                selectorStarted.countDown();
+                awaitUninterruptibly(releaseSelector);
+            }
+        };
+
+        try {
+            stuck.start();
+            assertTrue(selectorStarted.await(5, TimeUnit.SECONDS), "Server 应已开始监听");
+            setWsServer(manager, stuck);
+
+            List<String> messages = manager.restart(serverConfig(port));
+
+            assertSame(stuck, manager.getWsServer(), "停止未确认时不得启动第二个 Server");
+            assertTrue(
+                    messages.stream().anyMatch(message -> message.contains("未在")),
+                    "应明确报告停止失败，实际=" + messages);
+            assertTrue(
+                    messages.stream().anyMatch(message -> message.contains("不启动新的 Server")),
+                    "应明确报告跳过启动，实际=" + messages);
+
+            // 释放后旧实例仍然"可被找到并停止"：引用没有被丢弃
+            releaseSelector.countDown();
+            assertTrue(awaitTerminated(stuck, 5_000L), "释放后 selector 线程应退出");
+
+            // 第二次 restart：这次能确认终止 → 清理引用并启动新 Server
+            manager.restart(serverConfig(port));
+            WsServer replacement = manager.getWsServer();
+            assertNotNull(replacement, "确认终止后应能启动新的 Server");
+            assertNotSame(stuck, replacement, "应替换为新的 Server 实例");
+            assertTrue(awaitPortAccepting(port), "新 Server 应成功监听同一端口");
+        } finally {
+            releaseSelector.countDown();
+            manager.stop(1000, "test cleanup");
+        }
+    }
+
+    @Test
+    @DisplayName("stopWithResult：Server 停止未确认时返回失败并保留引用")
+    void stopWithResultReportsUnconfirmedServerStop() throws Exception {
+        int port = findFreePort();
+        WebsocketManager manager = newManager(serverConfig(port));
+        CountDownLatch selectorStarted = new CountDownLatch(1);
+        CountDownLatch releaseSelector = new CountDownLatch(1);
+
+        // 忽略中断：使 stopBounded 无法确认终止（与上一用例同一构造方式）
+        WsServer stuck = new WsServer(
+                new InetSocketAddress("127.0.0.1", port),
+                LOGGER,
+                HANDLE_PROTOCOL_MESSAGE,
+                "Server",
+                "",
+                true) {
+
+            @Override
+            public void onStart() {
+                super.onStart();
+                selectorStarted.countDown();
+                awaitUninterruptibly(releaseSelector);
+            }
+        };
+
+        try {
+            stuck.start();
+            assertTrue(selectorStarted.await(5, TimeUnit.SECONDS), "Server 应已开始监听");
+            setWsServer(manager, stuck);
+
+            WebsocketManager.StopResult result = manager.stopWithResult(1000, "test stop");
+
+            assertFalse(result.isServerStopped(), "selector 线程未退出时必须报告停止失败");
+            assertSame(stuck, manager.getWsServer(), "停止失败时不得丢弃 Server 引用");
+            assertTrue(
+                    result.messages().stream().anyMatch(message -> message.contains("未在")),
+                    "进度消息应包含超时说明，实际=" + result.messages());
+        } finally {
+            releaseSelector.countDown();
+            manager.stop(1000, "test cleanup");
+        }
+    }
+
+    @Test
+    @DisplayName("stopWithResult：无 Server 或已确认终止时报告成功")
+    void stopWithResultReportsSuccessWhenNothingToStop() {
+        WebsocketManager manager = newManager(disabledTransportsConfig());
+
+        WebsocketManager.StopResult result = manager.stopWithResult(1000, "test stop");
+
+        assertTrue(result.isServerStopped(), "没有 Server 时应视为已停止");
+        assertNull(manager.getWsServer());
+    }
+
+    @Test
+    @DisplayName("服务端级异常回调不清空引用：restart 会先确认终止再重建")
+    void serverFailureKeepsReferenceUntilConfirmedTerminated() throws Exception {
+        int port = findFreePort();
+        WebsocketManager manager = newManager(serverConfig(port));
+        try {
+            manager.start();
+            WsServer original = manager.getWsServer();
+            assertNotNull(original, "启动后应存在 Server");
+            assertTrue(awaitPortAccepting(port), "启动后端口应可连");
+
+            // 模拟服务端级异常回调（bind / selector 级错误）：回调不等于线程已退出
+            invokeServerFailure(manager, original);
+
+            assertSame(original, manager.getWsServer(), "异常回调不得提前释放 Server 引用");
+
+            // restart：先确认旧实例终止，再创建新实例；端口必须仍然可用（不能重复 bind 失败）
+            manager.restart(serverConfig(port));
+
+            WsServer replacement = manager.getWsServer();
+            assertNotNull(replacement, "确认终止后应创建新 Server");
+            assertNotSame(original, replacement, "应替换为新的 Server 实例");
+            assertTrue(original.isTerminated(), "旧实例应已终止");
+            assertTrue(awaitPortAccepting(port), "新 Server 应成功监听同一端口");
+
+            ProbeClient probe = new ProbeClient(port, "Server");
+            try {
+                probe.connect();
+                assertTrue(probe.awaitOpen(10_000L), "新 Server 应能完成真实握手");
+            } finally {
+                probe.closeQuietly();
+            }
+        } finally {
+            manager.stop(1000, "test cleanup");
+        }
+    }
+
+    @Test
+    @DisplayName("suspend() 关闭分发门控，restart() 重新开放")
+    void suspendClosesDispatchGateAndRestartReopensIt() {
+        AtomicInteger invocations = new AtomicInteger();
+        HandleProtocolMessage dispatcher = PlatformStubs.newDispatcher(
+                LOGGER,
+                GSON,
+                PlatformStubs.noopPlatformContext(),
+                command -> {
+                    invocations.incrementAndGet();
+                    return "ok";
+                });
+        WebsocketManager manager = new WebsocketManager(
+                LOGGER, GSON, dispatcher, disabledTransportsConfig(), PlatformStubs.newRuntimeUtils(LOGGER));
+        String request = "{\"api\":\"send_rcon_command\",\"data\":{\"command\":\"list\"}}";
+        try {
+            assertNotNull(dispatcher.handleHttpJson(request), "暂停前应正常分发");
+            assertEquals(1, invocations.get());
+
+            manager.suspend();
+
+            assertNull(dispatcher.handleHttpJson(request), "暂停后报文不得进入协议 Handler");
+            assertEquals(1, invocations.get(), "门控关闭后不得再调用协议 Handler");
+
+            manager.restart(disabledTransportsConfig());
+
+            assertNotNull(dispatcher.handleHttpJson(request), "恢复后应重新开放分发");
+            assertEquals(2, invocations.get());
+        } finally {
+            manager.stop(1000, "test cleanup");
+        }
+    }
+
+    @Test
+    @DisplayName("restart() 后端点真实可用：端口可连且能完成 WebSocket 握手")
+    void restartMakesEndpointReachableAgain() throws Exception {
+        int port = findFreePort();
+        WebsocketManager manager = newManager(serverConfig(port));
+        ProbeClient probe = null;
+        try {
+            manager.start();
+            assertTrue(awaitPortAccepting(port), "启动后端口应可连");
+
+            manager.suspend();
+            assertTrue(awaitPortClosed(port), "暂停后端口应关闭");
+
+            manager.restart(serverConfig(port));
+            assertTrue(awaitPortAccepting(port), "重启后端口应重新进入监听");
+
+            probe = new ProbeClient(port, "Server");
+            probe.connect();
+            assertTrue(probe.awaitOpen(10_000L), "重启后应能完成真实的 WebSocket 握手");
+        } finally {
+            if (probe != null) {
+                probe.closeQuietly();
+            }
+            manager.stop(1000, "test cleanup");
+        }
+    }
+
+    // ------------------------------------------------------------------
     // WS-A #14：start() 幂等
     // ------------------------------------------------------------------
 
@@ -213,6 +488,313 @@ class WebsocketManagerLifecycleTest {
                     "被创建的应是合法 endpoint，实际=" + clients.get(0).getURI());
         } finally {
             manager.stop(1000, "test cleanup");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 出站事件的生命周期门控
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("未启动时 sendEvent 不分发")
+    void sendEventRejectedBeforeStart() throws Exception {
+        WebsocketManager manager = newManager(eventConfig());
+        CountingServer server = new CountingServer(findFreePort());
+        try {
+            // 直接塞入接收方：确保"不发"来自状态检查，而不是"没有接收方"
+            setWsServer(manager, server);
+
+            manager.sendEvent(chatEvent());
+
+            assertEquals(0, server.broadcastCount(), "未启动的 Manager 不得分发事件");
+        } finally {
+            manager.stop(1000, "test cleanup");
+        }
+    }
+
+    @Test
+    @DisplayName("启动后可分发；suspend 后拒绝；restart 恢复后重新允许")
+    void sendEventFollowsStartSuspendRestart() throws Exception {
+        WebsocketManager manager = newManager(eventConfig());
+        CountingServer server = new CountingServer(findFreePort());
+        try {
+            manager.start();
+            setWsServer(manager, server);
+            manager.sendEvent(chatEvent());
+            assertEquals(1, server.broadcastCount(), "启动后应正常分发");
+
+            manager.suspend();
+            // 再次塞入接收方：此时"不发"必须由 started=false 决定
+            setWsServer(manager, server);
+            manager.sendEvent(chatEvent());
+            assertEquals(1, server.broadcastCount(), "suspend 之后不得分发");
+
+            manager.restart(eventConfig());
+            setWsServer(manager, server);
+            manager.sendEvent(chatEvent());
+            assertEquals(2, server.broadcastCount(), "restart 恢复后应重新允许分发");
+        } finally {
+            manager.stop(1000, "test cleanup");
+        }
+    }
+
+    @Test
+    @DisplayName("永久 stop 之后 sendEvent 不再分发")
+    void sendEventRejectedAfterStop() throws Exception {
+        WebsocketManager manager = newManager(eventConfig());
+        CountingServer server = new CountingServer(findFreePort());
+        manager.start();
+        setWsServer(manager, server);
+
+        manager.stop(1000, "test stop");
+        setWsServer(manager, server);
+        manager.sendEvent(chatEvent());
+
+        assertEquals(0, server.broadcastCount(), "销毁之后不得分发事件");
+    }
+
+    @Test
+    @DisplayName("sendEvent 在持有 lifecycleLock 期间无法完成分发（状态检查与快照同临界区）")
+    void sendEventAcquiresLifecycleLockBeforeDispatch() throws Exception {
+        WebsocketManager manager = newManager(eventConfig());
+        CountingServer server = new CountingServer(findFreePort());
+        manager.start();
+        setWsServer(manager, server);
+
+        Object lock = lifecycleLockOf(manager);
+        Thread sender;
+        synchronized (lock) {
+            sender = new Thread(() -> manager.sendEvent(chatEvent()), "send-event-probe");
+            sender.setDaemon(true);
+            sender.start();
+            sender.join(300L);
+            // 说明发送路径必须先进入 lifecycleLock 才能取快照/分发；
+            // "检查与快照在同一临界区"由实现中的单个 synchronized 块保证，无法在不加生产钩子的前提下单独观测
+            assertTrue(sender.isAlive(), "sendEvent 必须阻塞在 lifecycleLock 上");
+            assertEquals(0, server.broadcastCount(), "持锁期间不应完成分发");
+        }
+
+        sender.join(5_000L);
+        assertFalse(sender.isAlive(), "释放锁后 sendEvent 应完成");
+        assertEquals(1, server.broadcastCount(), "状态检查通过后应正常分发");
+
+        manager.stop(1000, "test cleanup");
+    }
+
+    @Test
+    @DisplayName("等待锁期间配置被禁用：旧配置读到的事件不得穿过门控")
+    void sendEventRejectsStaleEnableReadAcrossReload() throws Exception {
+        WebsocketManager manager = newManager(eventConfig());
+        CountingServer server = new CountingServer(findFreePort());
+        manager.start();
+        setWsServer(manager, server);
+
+        Object lock = lifecycleLockOf(manager);
+        Thread sender;
+        synchronized (lock) {
+            sender = new Thread(() -> manager.sendEvent(chatEvent()), "send-event-reload-race");
+            sender.setDaemon(true);
+            sender.start();
+            // 让发送线程进入 sendEvent 并阻塞在 lifecycleLock 上（此刻它还没有通过门控）
+            sender.join(300L);
+
+            // 模拟 reload：配置改为全局禁用，并按新配置恢复端点（同线程可重入 lifecycleLock）
+            manager.restart(disabledByGlobalSwitchConfig());
+            setWsServer(manager, server);
+        }
+        sender.join(5_000L);
+
+        assertFalse(sender.isAlive(), "发送线程应已完成");
+        assertEquals(0, server.broadcastCount(), "配置已禁用时不得分发，即使发送请求先到达");
+    }
+
+    // ------------------------------------------------------------------
+    // 辅助
+    // ------------------------------------------------------------------
+
+    /**
+     * 等待 selector 线程退出
+     *
+     * <p>端口是否释放由 {@code WsServerStopTest} 用确定性场景覆盖：本类的端口来自
+     * {@code findFreePort()}，与真正的 bind 之间存在竞态，不适合作为断言依据。
+     */
+    private static boolean awaitTerminated(WsServer server, long timeoutMillis) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+        while (System.nanoTime() < deadline) {
+            if (server.isTerminated()) {
+                return true;
+            }
+            Thread.sleep(10L);
+        }
+        return server.isTerminated();
+    }
+
+    /**
+     * 把测试构造的 WsServer 放进 Manager
+     *
+     * <p>Manager 自己创建 WsServer，无法注入；而"停止超时"这一失败路径必须有一个
+     * 卡住的 selector 线程才能触发，因此这里通过反射替换引用。
+     */
+    private static void setWsServer(WebsocketManager manager, WsServer server) throws Exception {
+        Field field = WebsocketManager.class.getDeclaredField("wsServer");
+        field.setAccessible(true);
+        field.set(manager, server);
+    }
+
+    /**
+     * 触发 Manager 的服务端级异常回调（等价于 {@code onError(null, ...)}）
+     */
+    private static void invokeServerFailure(WebsocketManager manager, WsServer server) throws Exception {
+        Method method = WebsocketManager.class.getDeclaredMethod("onServerFailure", WsServer.class);
+        method.setAccessible(true);
+        method.invoke(manager, server);
+    }
+
+    private static void awaitUninterruptibly(CountDownLatch latch) {
+        boolean interrupted = false;
+        try {
+            while (true) {
+                try {
+                    latch.await();
+                    return;
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
+            }
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    private static boolean awaitPortAccepting(int port) throws InterruptedException {
+        return awaitPortState(port, true);
+    }
+
+    private static boolean awaitPortClosed(int port) throws InterruptedException {
+        return awaitPortState(port, false);
+    }
+
+    private static boolean awaitPortState(int port, boolean accepting) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            if (isPortAccepting(port) == accepting) {
+                return true;
+            }
+            Thread.sleep(10L);
+        }
+        return isPortAccepting(port) == accepting;
+    }
+
+    private static boolean isPortAccepting(int port) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress("127.0.0.1", port), 500);
+            return true;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    /**
+     * 全局启用、但两个传输层都禁用：验证出站事件门控不需要真实端点
+     */
+    private static Config eventConfig() {
+        return runtimeOf("enable: true\nwebsocket_server:\n  enable: false\nwebsocket_client:\n  enable: false\n");
+    }
+
+    /**
+     * 全局禁用：用于验证"配置开关与生命周期状态同临界区确定"
+     */
+    private static Config disabledByGlobalSwitchConfig() {
+        return runtimeOf("enable: false\nwebsocket_server:\n  enable: false\nwebsocket_client:\n  enable: false\n");
+    }
+
+    /**
+     * 用于触发 sendEvent 的最小事件
+     */
+    private static PlayerChatEvent chatEvent() {
+        return new PlayerChatEvent(null, "", "", "hello");
+    }
+
+    /**
+     * 读取 Manager 的 lifecycleLock（验证"发送必须先取得该锁"）
+     */
+    private static Object lifecycleLockOf(WebsocketManager manager) throws Exception {
+        Field field = WebsocketManager.class.getDeclaredField("lifecycleLock");
+        field.setAccessible(true);
+        return field.get(manager);
+    }
+
+    /**
+     * 只统计广播次数的 Server 替身
+     *
+     * <p>不启动、不绑定端口：仅用于验证 {@code sendEvent} 是否真的把事件交给了 Server。
+     */
+    private static final class CountingServer extends WsServer {
+
+        private final AtomicInteger broadcasts = new AtomicInteger();
+
+        private CountingServer(int port) {
+            super(new InetSocketAddress("127.0.0.1", port), LOGGER, HANDLE_PROTOCOL_MESSAGE, "Server", "", true);
+        }
+
+        @Override
+        public void broadcast(String text) {
+            broadcasts.incrementAndGet();
+        }
+
+        @Override
+        public boolean stopBounded(int timeoutMillis, String reason) {
+            // 未启动的实例没有 selector 线程，直接报告"已终止"
+            return true;
+        }
+
+        private int broadcastCount() {
+            return broadcasts.get();
+        }
+    }
+
+    /**
+     * 最小 WebSocket 客户端：用于验证端点真的能完成握手
+     */
+    private static final class ProbeClient extends WebSocketClient {
+        private final CountDownLatch openLatch = new CountDownLatch(1);
+
+        private ProbeClient(int port, String serverName) throws Exception {
+            super(new URI("ws://127.0.0.1:" + port + "/minecraft/ws"));
+            // x-self-name 必须与服务端配置的 server_name 一致，否则握手会被 1008 拒绝
+            addHeader("x-self-name", serverName);
+            addHeader("x-client-origin", "test");
+        }
+
+        private boolean awaitOpen(long timeoutMillis) throws InterruptedException {
+            return openLatch.await(timeoutMillis, TimeUnit.MILLISECONDS);
+        }
+
+        private void closeQuietly() {
+            try {
+                closeConnection(1000, "test cleanup");
+            } catch (RuntimeException ignored) {
+                // 已被服务端关闭：清理阶段忽略
+            }
+        }
+
+        @Override
+        public void onOpen(ServerHandshake handshake) {
+            openLatch.countDown();
+        }
+
+        @Override
+        public void onMessage(String message) {
+        }
+
+        @Override
+        public void onClose(int code, String reason, boolean remote) {
+        }
+
+        @Override
+        public void onError(Exception exception) {
         }
     }
 
