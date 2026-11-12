@@ -20,8 +20,8 @@ io.github.theword.queqiao.core.exception.protocol
 io.github.theword.queqiao.core.exception.rcon
 io.github.theword.queqiao.core.exception.response
 io.github.theword.queqiao.core.exception.status
+io.github.theword.queqiao.core.extension
 io.github.theword.queqiao.core.handle
-io.github.theword.queqiao.core.localize
 io.github.theword.queqiao.core.payload
 io.github.theword.queqiao.core.platform
 io.github.theword.queqiao.core.protocol
@@ -29,5 +29,6 @@ io.github.theword.queqiao.core.protocol.handler.status
 io.github.theword.queqiao.core.rcon
 io.github.theword.queqiao.core.response
 io.github.theword.queqiao.core.runtime
+io.github.theword.queqiao.core.translation
 io.github.theword.queqiao.core.utils
 io.github.theword.queqiao.core.websocket
